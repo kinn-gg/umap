@@ -12,30 +12,7 @@ type Neighbors struct {
 }
 
 func ExactNeighbors(x Matrix, k int, metric Metric) (Neighbors, error) {
-	n, d := x.Shape()
-	if n < 2 || k < 1 || k >= n {
-		return Neighbors{}, validationf("neighbors must be in [1, rows)")
-	}
-	out := Neighbors{n, k, make([]int, n*k), make([]float32, n*k)}
-	sa, sb := make([]float32, d), make([]float32, d)
-	type pair struct {
-		i int
-		d float64
-	}
-	pairs := make([]pair, n)
-	for i := 0; i < n; i++ {
-		for j := 0; j < n; j++ {
-			pairs[j] = pair{j, MatrixDistance(metric, x, i, x, j, sa, sb)}
-		}
-		sort.Slice(pairs, func(a, b int) bool {
-			return pairs[a].d < pairs[b].d || (pairs[a].d == pairs[b].d && pairs[a].i < pairs[b].i)
-		})
-		for q := 0; q < k; q++ {
-			out.Indices[i*k+q] = pairs[q].i
-			out.Distances[i*k+q] = float32(pairs[q].d)
-		}
-	}
-	return out, nil
+	return ExactNeighborsWithOptions(nil, x, k, metric, ExactOptions{})
 }
 
 func SmoothKNN(n Neighbors, localConnectivity, bandwidth float32) (rho, sigma []float32) {
@@ -124,7 +101,7 @@ type Graph struct {
 }
 
 func FuzzyGraph(n Neighbors, rho, sigma []float32, mix float32) Graph {
-	directed := make(map[[2]int]float32, n.Rows*n.K)
+	directed := make([]Edge, 0, n.Rows*n.K)
 	for i := 0; i < n.Rows; i++ {
 		for q := 0; q < n.K; q++ {
 			j := n.Indices[i*n.K+q]
@@ -136,21 +113,29 @@ func FuzzyGraph(n Neighbors, rho, sigma []float32, mix float32) Graph {
 			if d > 0 && sigma[i] > 0 {
 				w = float32(math.Exp(-float64(d / sigma[i])))
 			}
-			directed[[2]int{i, j}] = w
+			directed = append(directed, Edge{i, j, w})
 		}
 	}
-	keys := make(map[[2]int]struct{}, len(directed))
-	for k := range directed {
-		a, b := k[0], k[1]
+	sort.Slice(directed, func(i, j int) bool {
+		return directed[i].Head < directed[j].Head || (directed[i].Head == directed[j].Head && directed[i].Tail < directed[j].Tail)
+	})
+	weight := func(a, b int) float32 {
+		i := sort.Search(len(directed), func(i int) bool { return directed[i].Head > a || (directed[i].Head == a && directed[i].Tail >= b) })
+		if i < len(directed) && directed[i].Head == a && directed[i].Tail == b {
+			return directed[i].Weight
+		}
+		return 0
+	}
+	edges := make([]Edge, 0, 2*len(directed))
+	for _, e := range directed {
+		a, b := e.Head, e.Tail
 		if a > b {
+			if weight(b, a) > 0 {
+				continue
+			}
 			a, b = b, a
 		}
-		keys[[2]int{a, b}] = struct{}{}
-	}
-	edges := make([]Edge, 0, 2*len(keys))
-	for k := range keys {
-		a, b := k[0], k[1]
-		x, y := directed[[2]int{a, b}], directed[[2]int{b, a}]
+		x, y := weight(a, b), weight(b, a)
 		prod := x * y
 		w := mix*(x+y-prod) + (1-mix)*prod
 		if w > 0 {

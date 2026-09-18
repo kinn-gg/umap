@@ -12,7 +12,7 @@ Run the micro and end-to-end comparison benchmarks with Go's machine-readable
 output enabled:
 
 ```sh
-go test -run '^$' -bench . -benchmem -count 5 -json ./internal/parity \
+go test -run '^$' -bench . -benchmem -count 5 -json ./... \
   > go-bench.jsonl
 ```
 
@@ -23,6 +23,12 @@ includes artifact decoding, validation, and full staged comparison for the
 checked-in corpus. These currently establish the overhead of the differential
 harness; pipeline-stage benchmarks should use the same axis names and dataset
 profiles as Go stages land.
+
+The root package includes `BenchmarkNeighborSearchCrossover`, which compares
+blocked exact search with NN-descent at 256, 1,024, and 4,096 rows, and
+`BenchmarkNNDescentTextLike99PercentSparse`, which exercises 0.5%-dense CSR
+data. Recall and fixed-seed reproducibility are enforced separately in the
+fast test suite so benchmark tuning cannot silently trade away quality.
 
 Measure peak RSS for any Go benchmark or Python reference invocation:
 
