@@ -1,6 +1,11 @@
 package umap
 
-import "context"
+import (
+	"context"
+	"crypto/rand"
+	"encoding/binary"
+	"math"
+)
 
 type Config struct {
 	Neighbors, Components, Epochs                                        int
@@ -16,10 +21,12 @@ type Config struct {
 	NeighborSearch                                                       NeighborSearchOptions
 	MemoryBudget                                                         int64
 	Progress                                                             ProgressFunc
+	TransformSeed                                                        uint64
+	Target                                                               TargetConfig
 }
 
 func DefaultConfig() Config {
-	return Config{Neighbors: 15, Components: 2, Metric: NewMetric(Euclidean), LearningRate: 1, Init: SpectralInit, MinDist: .1, Spread: 1, SetOpMixRatio: 1, LocalConnectivity: 1, RepulsionStrength: 1, NegativeSampleRate: 5}
+	return Config{Neighbors: 15, Components: 2, Metric: NewMetric(Euclidean), LearningRate: 1, Init: SpectralInit, MinDist: .1, Spread: 1, SetOpMixRatio: 1, LocalConnectivity: 1, RepulsionStrength: 1, NegativeSampleRate: 5, TransformSeed: 42, Target: TargetConfig{Weight: .5}}
 }
 
 type UMAP struct{ config Config }
@@ -50,11 +57,17 @@ func NewContinuous(values []float32) (Continuous, error) {
 	if len(values) == 0 {
 		return Continuous{}, shapef("continuous target cannot be empty")
 	}
+	for _, v := range values {
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+			return Continuous{}, numericf("continuous target contains non-finite value")
+		}
+	}
 	return Continuous{values: append([]float32(nil), values...)}, nil
 }
 
 func New(c Config) (*UMAP, error) {
-	if c.Neighbors < 2 || c.Components < 1 || c.LearningRate <= 0 || c.Spread <= 0 || c.MinDist < 0 || c.MinDist > c.Spread || c.SetOpMixRatio < 0 || c.SetOpMixRatio > 1 || c.LocalConnectivity < 0 || c.NegativeSampleRate < 0 || c.MemoryBudget < 0 {
+	finite := func(v float32) bool { return !math.IsNaN(float64(v)) && !math.IsInf(float64(v), 0) }
+	if c.Neighbors < 2 || c.Components < 1 || c.Epochs < 0 || c.Workers < 0 || c.LearningRate <= 0 || c.Spread <= 0 || c.MinDist < 0 || c.MinDist > c.Spread || c.SetOpMixRatio < 0 || c.SetOpMixRatio > 1 || c.LocalConnectivity < 0 || c.RepulsionStrength < 0 || c.NegativeSampleRate < 0 || c.MemoryBudget < 0 || c.Target.Weight < 0 || c.Target.Weight > 1 || c.Target.Neighbors < 0 || !finite(c.LearningRate) || !finite(c.Spread) || !finite(c.MinDist) || !finite(c.SetOpMixRatio) || !finite(c.LocalConnectivity) || !finite(c.RepulsionStrength) || !finite(c.Target.Weight) || !finite(c.A) || !finite(c.B) {
 		return nil, validationf("invalid UMAP configuration")
 	}
 	if (c.A == 0) != (c.B == 0) {
@@ -62,6 +75,12 @@ func New(c Config) (*UMAP, error) {
 	}
 	if c.Deterministic && c.Workers > 1 {
 		return nil, validationf("deterministic mode requires at most one worker")
+	}
+	if c.Metric.Kind > Dice || c.Init > SpectralInit || c.Target.Metric > TargetL2 || c.NeighborSearch.Algorithm > SearchNNDescent {
+		return nil, validationf("configuration contains an unknown enum value")
+	}
+	if c.Metric.Kind == Minkowski && (c.Metric.P <= 0 || math.IsNaN(c.Metric.P) || math.IsInf(c.Metric.P, 0)) {
+		return nil, validationf("Minkowski p must be finite and positive")
 	}
 	return &UMAP{c}, nil
 }
@@ -85,16 +104,30 @@ type Model struct {
 	embedding *Embedding
 	graph     Graph
 	seed      uint64
+	config    Config
+	training  Matrix
 }
 
 func (m *Model) Embedding() *Embedding { return m.embedding }
-func (u *UMAP) Fit(ctx context.Context, x Matrix, _ ...any) (*Model, error) {
-	m, _, err := u.FitTransform(ctx, x)
+func (m *Model) Graph() Graph {
+	if m == nil {
+		return Graph{}
+	}
+	return Graph{Vertices: m.graph.Vertices, Edges: append([]Edge(nil), m.graph.Edges...)}
+}
+func (u *UMAP) Fit(ctx context.Context, x Matrix, y Target) (*Model, error) {
+	m, _, err := u.FitTransform(ctx, x, y)
 	return m, err
 }
-func (u *UMAP) FitTransform(ctx context.Context, x Matrix, _ ...any) (*Model, *Embedding, error) {
+func (u *UMAP) FitTransform(ctx context.Context, x Matrix, y Target) (*Model, *Embedding, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
+	}
+	if x == nil {
+		return nil, nil, shapef("matrix cannot be nil")
 	}
 	rows, _ := x.Shape()
 	if rows < 2 {
@@ -102,7 +135,7 @@ func (u *UMAP) FitTransform(ctx context.Context, x Matrix, _ ...any) (*Model, *E
 	}
 	cfg := u.config
 	k := min(cfg.Neighbors, rows-1)
-	seed := uint64(0)
+	seed := randomSeed()
 	if cfg.Seed != nil {
 		seed = *cfg.Seed
 	}
@@ -126,6 +159,10 @@ func (u *UMAP) FitTransform(ctx context.Context, x Matrix, _ ...any) (*Model, *E
 	}
 	rho, sigma := SmoothKNN(knn, cfg.LocalConnectivity, 1)
 	graph := FuzzyGraph(knn, rho, sigma, cfg.SetOpMixRatio)
+	graph, err = applyTarget(graph, y, rows, cfg.Target)
+	if err != nil {
+		return nil, nil, err
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -147,8 +184,23 @@ func (u *UMAP) FitTransform(ctx context.Context, x Matrix, _ ...any) (*Model, *E
 			epochs = 500
 		}
 	}
-	data := OptimizeLayout(init, graph, cfg.Components, epochs, cfg.LearningRate, a, b, cfg.RepulsionStrength, cfg.NegativeSampleRate, seed)
+	data, err := optimizeLayoutContext(ctx, init, graph, cfg.Components, epochs, cfg.LearningRate, a, b, cfg.RepulsionStrength, cfg.NegativeSampleRate, seed)
+	if err != nil {
+		return nil, nil, err
+	}
 	e := &Embedding{data, rows, cfg.Components}
-	m := &Model{e, graph, seed}
+	training, err := cloneMatrix(x)
+	if err != nil {
+		return nil, nil, err
+	}
+	m := &Model{embedding: e, graph: graph, seed: seed, config: cfg, training: training}
 	return m, e, nil
+}
+
+func randomSeed() uint64 {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return binary.LittleEndian.Uint64(b[:])
+	}
+	return 0
 }

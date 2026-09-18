@@ -123,3 +123,18 @@ func denseRow(m Matrix, r int, scratch []float32) []float32 {
 		panic("unreachable")
 	}
 }
+
+func cloneMatrix(m Matrix) (Matrix, error) {
+	switch x := m.(type) {
+	case Dense:
+		data := make([]float32, x.rows*x.columns)
+		for r := 0; r < x.rows; r++ {
+			copy(data[r*x.columns:], x.Row(r))
+		}
+		return NewDense(data, x.rows, x.columns)
+	case CSR:
+		return NewCSR(append([]float32(nil), x.values...), append([]uint32(nil), x.columns...), append([]uint64(nil), x.offsets...), x.rows, x.columnCount)
+	default:
+		return nil, unsupportedf("unsupported matrix type")
+	}
+}
