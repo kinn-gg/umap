@@ -1,0 +1,12 @@
+umap: a Go implementation of UMAP and densMAP
+
+The algorithms are described by:
+
+- McInnes, Healy, and Melville, "UMAP: Uniform Manifold Approximation and
+  Projection for Dimension Reduction" (2018), arXiv:1802.03426.
+- Narayan, Berger, and Cho, "Assessing single-cell transcriptomic variability
+  through density-preserving data visualization" (2021), Nature Biotechnology.
+
+Compatibility is evaluated against umap-learn, Copyright (c) 2017 Leland
+McInnes, John Healy, and James Melville, distributed under the BSD 3-Clause
+license. No umap-learn source code is included in this module.

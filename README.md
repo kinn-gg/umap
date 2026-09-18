@@ -1,7 +1,7 @@
 # umap
 
-`umap` is an allocation-conscious Go implementation of Uniform
-Manifold Approximation and Projection (UMAP).
+`umap` is a production-oriented, allocation-conscious Go implementation of
+Uniform Manifold Approximation and Projection (UMAP) for Go 1.24 and newer.
 
 The deterministic single-threaded implementation includes:
 
@@ -17,6 +17,7 @@ The deterministic single-threaded implementation includes:
 - reusable fit/transform models for dense and sparse observations;
 - categorical, semi-supervised, and continuous target-informed fitting; and
 - checksummed, versioned model serialization with bounded decoding.
+- densMAP density preservation and optional original/embedding density radii.
 
 ```go
 cfg := umap.DefaultConfig()
@@ -41,7 +42,24 @@ Models implement `encoding.BinaryMarshaler`; restore them with
 `umap.UnmarshalModel`. The format includes learned graph, embedding, owned
 training/search data, parameters, a version marker, and a SHA-256 checksum.
 
-The proposed v1 Go API, pinned Python compatibility target, and numerical
-guarantees are specified in [the v1 API and compatibility contract](docs/v1-contract.md).
-Scalable search controls, memory accounting, and benchmark methodology are in
-[the Milestone 2 neighbor-search guide](docs/m2-neighbor-search.md).
+Enable densMAP with `cfg.Density.Enabled = true`. Set
+`cfg.Density.Output = true` to retrieve immutable log-radius vectors through
+`Model.OriginalRadii` and `Model.EmbeddingRadii`; output-only mode does not
+change the embedding.
+
+## Documentation
+
+- [Getting started, tuning, migration, and serialization](docs/guide.md)
+- [Supported-feature compatibility matrix and known differences](docs/compatibility.md)
+- [API contract and numerical tolerances](docs/v1-contract.md)
+- [Reproducible benchmark results and regression policy](docs/m4-performance.md)
+- [Scalable search controls and memory accounting](docs/m2-neighbor-search.md)
+- [Release, semantic-versioning, and attribution policy](docs/releasing.md)
+
+The implementation follows the UMAP and densMAP papers and pins compatibility
+claims to `umap-learn` 0.5.12. Coordinates are not expected to be byte-identical
+across implementations; the contract defines artifact and quality tolerances.
+
+## License
+
+BSD 3-Clause. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

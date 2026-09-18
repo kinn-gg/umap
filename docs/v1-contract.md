@@ -1,12 +1,11 @@
 # v1 API and `umap-learn` compatibility contract
 
-Status: **proposal**
+Status: **v1 contract**
 
 Last updated: 2026-09-18
 
-This document freezes the intended v1 surface before implementation. Names and
-signatures below are proposals until the first implementation release, but any
-intentional departure from them requires a documented compatibility decision.
+This document defines the v1 surface and compatibility expectations. The table
+is authoritative where earlier proposed names differ from the shipped API.
 
 ## Reference and meaning of compatibility
 
@@ -22,7 +21,7 @@ that coordinates must be element-for-element equal: eigensolvers, floating
 point contraction, neighbor-search traversal, and parallel scheduling can
 rotate, reflect, or slightly deform an otherwise equivalent embedding.
 
-## Proposed package surface
+## Package surface
 
 ```go
 package umap

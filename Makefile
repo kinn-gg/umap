@@ -1,4 +1,4 @@
-.PHONY: test race parity-generate parity-full bench-go bench-python profiles
+.PHONY: test race parity-generate parity-full bench-go bench-density bench-python profiles
 test:
 	go test ./...
 race:
@@ -10,6 +10,8 @@ parity-full:
 	PARITY_CORPUS=/tmp/umap-parity-full go test ./internal/parity
 bench-go:
 	go test -run '^$$' -bench . -benchmem -count 5 ./...
+bench-density:
+	go test -run '^$$' -bench BenchmarkDensityOverhead -benchmem -count 5 .
 bench-python:
 	uv run --project parity --locked python benchmarks/python_reference.py --suite fast --repeats 5
 profiles:

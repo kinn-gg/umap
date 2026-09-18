@@ -1,0 +1,34 @@
+name: Release
+on:
+  push:
+    tags: ['v*.*.*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Validate semantic version tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: '[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]'
+      - run: go test ./...
+      - run: go test -race ./...
+      - name: Build reproducible source archives
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          git archive --format=tar --prefix="umap-${TAG}/" "$TAG" | gzip -n > "umap-${TAG}.tar.gz"
+          git archive --format=zip --prefix="umap-${TAG}/" "$TAG" > "umap-${TAG}.zip"
+          sha256sum "umap-${TAG}.tar.gz" "umap-${TAG}.zip" > SHA256SUMS
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --verify-tag --generate-notes "umap-${TAG}.tar.gz" "umap-${TAG}.zip" SHA256SUMS

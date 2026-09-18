@@ -147,6 +147,10 @@ func OptimizeLayout(initial []float32, g Graph, components, epochs int, learning
 }
 
 func optimizeLayoutContext(ctx context.Context, initial []float32, g Graph, components, epochs int, learningRate, a, b, repulsion float32, negativeRate int, seed uint64) ([]float32, error) {
+	return optimizeLayoutDensityContext(ctx, initial, g, components, epochs, learningRate, a, b, repulsion, negativeRate, seed, nil, DensityConfig{})
+}
+
+func optimizeLayoutDensityContext(ctx context.Context, initial []float32, g Graph, components, epochs int, learningRate, a, b, repulsion float32, negativeRate int, seed uint64, originalRadii []float32, density DensityConfig) ([]float32, error) {
 	out := append([]float32(nil), initial...)
 	if epochs <= 0 || len(g.Edges) == 0 {
 		return out, ctx.Err()
@@ -173,6 +177,11 @@ func optimizeLayoutContext(ctx context.Context, initial []float32, g Graph, comp
 			return nil, err
 		}
 		alpha := learningRate * (1 - float32(epoch)/float32(epochs))
+		var densityError []float32
+		if density.Enabled && density.Lambda > 0 && float32(epoch) >= float32(epochs)*(1-density.Fraction) {
+			embedded := graphRadiiEmbedding(g, out, components)
+			densityError = standardizedDifference(originalRadii, embedded, density.VarianceShift)
+		}
 		for ei, e := range g.Edges {
 			if nextSample[ei] > float32(epoch) {
 				continue
@@ -184,6 +193,11 @@ func optimizeLayoutContext(ctx context.Context, initial []float32, g Graph, comp
 			}
 			if dist2 > 0 {
 				gradCoeff := -2 * a * b * float32(math.Pow(float64(dist2), float64(b-1))) / (a*float32(math.Pow(float64(dist2), float64(b))) + 1)
+				// The density term pulls an edge together when its endpoints are
+				// locally too diffuse and pushes it apart when too concentrated.
+				if densityError != nil {
+					gradCoeff -= density.Lambda * (densityError[e.Head] + densityError[e.Tail]) / (dist2 + density.VarianceShift)
+				}
 				for c := 0; c < components; c++ {
 					d := out[e.Head*components+c] - out[e.Tail*components+c]
 					grad := clamp(gradCoeff*d, -4, 4) * alpha
@@ -220,6 +234,66 @@ func optimizeLayoutContext(ctx context.Context, initial []float32, g Graph, comp
 		}
 	}
 	return out, nil
+}
+
+func graphRadiiMatrix(g Graph, x Matrix, metric Metric) []float32 {
+	return graphRadii(g, func(i, j int) float64 { return MatrixDistance(metric, x, i, x, j, nil, nil) })
+}
+
+func graphRadiiEmbedding(g Graph, embedding []float32, components int) []float32 {
+	return graphRadii(g, func(i, j int) float64 {
+		d := 0.0
+		for c := 0; c < components; c++ {
+			v := float64(embedding[i*components+c] - embedding[j*components+c])
+			d += v * v
+		}
+		return math.Sqrt(d)
+	})
+}
+
+// graphRadii matches densMAP's log of the weighted mean squared edge distance.
+func graphRadii(g Graph, distance func(int, int) float64) []float32 {
+	sum, weight := make([]float64, g.Vertices), make([]float64, g.Vertices)
+	for _, e := range g.Edges {
+		d := distance(e.Head, e.Tail)
+		sum[e.Head] += float64(e.Weight) * d * d
+		weight[e.Head] += float64(e.Weight)
+	}
+	out := make([]float32, g.Vertices)
+	for i := range out {
+		v := 0.0
+		if weight[i] > 0 {
+			v = math.Log(1e-8 + sum[i]/weight[i])
+		}
+		out[i] = float32(v)
+	}
+	return out
+}
+
+func standardizedDifference(original, embedded []float32, shift float32) []float32 {
+	n := len(original)
+	out := make([]float32, n)
+	if n == 0 {
+		return out
+	}
+	mo, me := 0.0, 0.0
+	for i := range original {
+		mo += float64(original[i])
+		me += float64(embedded[i])
+	}
+	mo /= float64(n)
+	me /= float64(n)
+	vo, ve := float64(shift), float64(shift)
+	for i := range original {
+		a, b := float64(original[i])-mo, float64(embedded[i])-me
+		vo += a * a / float64(n)
+		ve += b * b / float64(n)
+	}
+	so, se := math.Sqrt(vo), math.Sqrt(ve)
+	for i := range out {
+		out[i] = float32((float64(embedded[i])-me)/se - (float64(original[i])-mo)/so)
+	}
+	return out
 }
 func clamp(x, lo, hi float32) float32 {
 	if x < lo {

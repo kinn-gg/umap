@@ -15,6 +15,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Go runtime and allocation results
         run: go test -run '^$' -bench 'Benchmark(Euclidean|ExactNeighborWorkers|CorpusEndToEnd)' -benchmem -count 5 ./... | tee go.bench
+      - name: densMAP runtime and allocation overhead
+        run: go test -run '^$' -bench BenchmarkDensityOverhead -benchmem -count 5 . | tee density.bench
       - name: Go peak RSS
         run: go run ./cmd/peakrss --output go-rss.json -- go test -run '^$' -bench BenchmarkExactNeighborWorkers -benchtime 3x .
       - name: Pinned Python reference
@@ -26,6 +28,7 @@ jobs:
           name: performance-${{ github.sha }}
           path: |
             go.bench
+            density.bench
             go-rss.json
             python-bench.jsonl
           retention-days: 90
