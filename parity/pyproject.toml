@@ -1,0 +1,16 @@
+[project]
+name = "umap-parity"
+version = "0.1.0"
+description = "Pinned Python reference environment for the Go UMAP parity harness"
+requires-python = "==3.11.16"
+dependencies = [
+    "numba==0.61.2",
+    "numpy==2.2.6",
+    "pynndescent==0.5.13",
+    "scikit-learn==1.6.1",
+    "scipy==1.15.3",
+    "umap-learn @ git+https://github.com/lmcinnes/umap.git@cdb0eeb236f5d6759e0c3dd1fe132aef4db9e7b1",
+]
+
+[tool.uv]
+package = false

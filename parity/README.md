@@ -7,12 +7,12 @@ versions, exact kNN output, `rho`/`sigma`, fuzzy graph, initialization, and fina
 embedding. The six deterministic generators cover dense, sparse, clustered,
 noisy, duplicated, and degenerate inputs.
 
-Regenerate the corpus in a clean Python 3.11 environment:
+Regenerate the corpus with
+[`uv`](https://docs.astral.sh/uv/). The committed lockfile supplies Python
+3.11.16 and the complete pinned dependency graph automatically:
 
 ```sh
-python -m venv .venv-parity
-.venv-parity/bin/pip install -r parity/requirements.txt
-.venv-parity/bin/python parity/generate.py --suite full
+uv run --project parity --locked python parity/generate.py --suite full
 ```
 
 Compare a Go-produced artifact with its reference:
@@ -35,5 +35,6 @@ aligned NRMSE `0.10`. These scale-aware gates avoid bitwise floating-point
 assumptions across supported platforms.
 
 `go test ./...` validates the checked-in fast subset without requiring Python.
-`make parity-full` generates and validates all six fixtures separately under
-`/tmp`; `make parity-generate` intentionally refreshes the versioned corpus.
+`make parity-full` uses the locked uv environment to generate and validate all
+six fixtures separately under `/tmp`; `make parity-generate` intentionally
+refreshes the versioned corpus.
