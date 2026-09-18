@@ -1,0 +1,32 @@
+name: Performance baselines
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: astral-sh/setup-uv@v6
+      - name: Go runtime and allocation results
+        run: go test -run '^$' -bench 'Benchmark(Euclidean|ExactNeighborWorkers|CorpusEndToEnd)' -benchmem -count 5 ./... | tee go.bench
+      - name: Go peak RSS
+        run: go run ./cmd/peakrss --output go-rss.json -- go test -run '^$' -bench BenchmarkExactNeighborWorkers -benchtime 3x .
+      - name: Pinned Python reference
+        run: uv run --project parity --locked python benchmarks/python_reference.py --suite fast --repeats 5 --output python-bench.jsonl
+      - name: Enforce stable microbench allocation budget
+        run: go test -run TestHotPathAllocationGate -count 10 ./...
+      - uses: actions/upload-artifact@v4
+        with:
+          name: performance-${{ github.sha }}
+          path: |
+            go.bench
+            go-rss.json
+            python-bench.jsonl
+          retention-days: 90

@@ -73,9 +73,6 @@ func New(c Config) (*UMAP, error) {
 	if (c.A == 0) != (c.B == 0) {
 		return nil, validationf("A and B must be specified together")
 	}
-	if c.Deterministic && c.Workers > 1 {
-		return nil, validationf("deterministic mode requires at most one worker")
-	}
 	if c.Metric.Kind > Dice || c.Init > SpectralInit || c.Target.Metric > TargetL2 || c.NeighborSearch.Algorithm > SearchNNDescent {
 		return nil, validationf("configuration contains an unknown enum value")
 	}
@@ -153,6 +150,8 @@ func (u *UMAP) FitTransform(ctx context.Context, x Matrix, y Target) (*Model, *E
 	if cfg.Seed != nil {
 		search.Approximate.Seed = seed
 	}
+	search.Exact.Workers = cfg.Workers
+	search.Approximate.Workers = cfg.Workers
 	knn, err := FindNeighbors(ctx, x, k, cfg.Metric, search)
 	if err != nil {
 		return nil, nil, err

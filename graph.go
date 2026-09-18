@@ -19,6 +19,11 @@ func SmoothKNN(n Neighbors, localConnectivity, bandwidth float32) (rho, sigma []
 	rho = make([]float32, n.Rows)
 	sigma = make([]float32, n.Rows)
 	target := math.Log2(float64(n.K)) * float64(bandwidth)
+	globalMean := 0.
+	for _, v := range n.Distances {
+		globalMean += float64(v)
+	}
+	globalMean /= float64(len(n.Distances))
 	for i := 0; i < n.Rows; i++ {
 		ds := n.Distances[i*n.K : (i+1)*n.K]
 		nonzero := make([]float32, 0, n.K)
@@ -69,12 +74,7 @@ func SmoothKNN(n Neighbors, localConnectivity, bandwidth float32) (rho, sigma []
 				}
 			}
 		}
-		mean := 0.
-		for _, v := range n.Distances {
-			mean += float64(v)
-		}
-		mean /= float64(len(n.Distances))
-		floor := 1e-3 * mean
+		floor := 1e-3 * globalMean
 		if rho[i] > 0 {
 			local := 0.
 			for _, v := range ds {
