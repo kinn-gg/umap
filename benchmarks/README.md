@@ -6,6 +6,11 @@ allocations, retained heap, and process peak RSS. Results are JSON or JSONL and
 include tool versions, platform, hardware, warmup policy, parameters, and an
 SHA-256 checksum of every input.
 
+The full benchmark suite is intentionally local-only because it is too slow
+for routine CI. Pull requests still run correctness, race, parity, and focused
+allocation regression tests; run the commands below when evaluating
+performance changes.
+
 ## Go measurements
 
 Run the micro and end-to-end comparison benchmarks with Go's machine-readable
@@ -137,8 +142,8 @@ before reporting median fit time and allocation measurements; it fails rather
 than comparing mismatched cases.
 
 The generated files are `go-umap-bench.jsonl`, `python-umap-bench.jsonl`, and
-`umap-comparison.json`. CI also stores a Markdown summary. Go allocated bytes
-come from `runtime.MemStats.TotalAlloc`; Python's allocation peak comes from
+`umap-comparison.json`. Go allocated bytes come from
+`runtime.MemStats.TotalAlloc`; Python's allocation peak comes from
 `tracemalloc`, so each is useful for regressions within its runtime but their
 ratio is not a direct heap-efficiency claim. Peak RSS includes each language
 runtime and rises monotonically over the process; compare matching case order
