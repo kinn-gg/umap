@@ -21,6 +21,12 @@ jobs:
         run: go run ./cmd/peakrss --output go-rss.json -- go test -run '^$' -bench BenchmarkExactNeighborWorkers -benchtime 3x .
       - name: Pinned Python reference
         run: uv run --project parity --locked python benchmarks/python_reference.py --suite fast --repeats 5 --output python-bench.jsonl
+      - name: Matched Go end-to-end benchmark
+        run: go run ./cmd/umap-benchmark --repeats 5 --output go-umap-bench.jsonl
+      - name: Matched Python end-to-end benchmark
+        run: uv run --project parity --locked python benchmarks/python_reference.py --suite matched --repeats 5 --output python-umap-bench.jsonl
+      - name: Validate and compare matched results
+        run: uv run --project parity --locked python benchmarks/compare.py --go go-umap-bench.jsonl --python python-umap-bench.jsonl --output umap-comparison.json | tee umap-comparison.md
       - name: Enforce stable microbench allocation budget
         run: go test -run TestHotPathAllocationGate -count 10 ./...
       - uses: actions/upload-artifact@v4
@@ -31,4 +37,8 @@ jobs:
             density.bench
             go-rss.json
             python-bench.jsonl
+            go-umap-bench.jsonl
+            python-umap-bench.jsonl
+            umap-comparison.json
+            umap-comparison.md
           retention-days: 90

@@ -1,4 +1,4 @@
-.PHONY: test race parity-generate parity-full bench-go bench-density bench-python profiles
+.PHONY: test race parity-generate parity-full bench-go bench-density bench-python bench-compare profiles
 test:
 	go test ./...
 race:
@@ -14,5 +14,9 @@ bench-density:
 	go test -run '^$$' -bench BenchmarkDensityOverhead -benchmem -count 5 .
 bench-python:
 	uv run --project parity --locked python benchmarks/python_reference.py --suite fast --repeats 5
+bench-compare:
+	go run ./cmd/umap-benchmark --repeats 5 --output go-umap-bench.jsonl
+	uv run --project parity --locked python benchmarks/python_reference.py --suite matched --repeats 5 --output python-umap-bench.jsonl
+	uv run --project parity --locked python benchmarks/compare.py --go go-umap-bench.jsonl --python python-umap-bench.jsonl --output umap-comparison.json
 profiles:
 	go test -run '^$$' -bench BenchmarkExactNeighborWorkers -benchtime 5x -cpuprofile cpu.pprof -memprofile heap.pprof .
