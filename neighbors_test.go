@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"runtime"
+	"slices"
 	"testing"
 )
 
@@ -207,6 +208,48 @@ func BenchmarkNNDescentTextLike99PercentSparse(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = NNDescent(context.Background(), x, 15, NewMetric(Cosine), NNDescentOptions{Seed: 1, MaxIterations: 5})
+	}
+}
+
+func BenchmarkExactSparseTextCosine(b *testing.B) {
+	const rows, dimensions, perRow = 1000, 5000, 50
+	values := make([]float32, rows*perRow)
+	columns := make([]uint32, rows*perRow)
+	offsets := make([]uint64, rows+1)
+	for r := 0; r < rows; r++ {
+		offsets[r] = uint64(r * perRow)
+		for j := 0; j < perRow; j++ {
+			values[r*perRow+j] = float32((j%7)+1) / 7
+			columns[r*perRow+j] = uint32(j*97 + r%97)
+		}
+	}
+	offsets[rows] = uint64(len(values))
+	x, _ := NewCSR(values, columns, offsets, rows, dimensions)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		_, _ = ExactNeighborsWithOptions(context.Background(), x, 15, NewMetric(Cosine), ExactOptions{Workers: 1})
+	}
+}
+
+func TestSparseCosineExactMatchesParallelFullScan(t *testing.T) {
+	values := []float32{1, 2, -1, 3, 4, 2}
+	columns := []uint32{0, 4, 1, 4, 2, 5}
+	offsets := []uint64{0, 2, 2, 4, 6}
+	x, err := NewCSR(values, columns, offsets, 4, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	one, err := ExactNeighborsWithOptions(context.Background(), x, 3, NewMetric(Cosine), ExactOptions{Workers: 1, BlockSize: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parallel, err := ExactNeighborsWithOptions(context.Background(), x, 3, NewMetric(Cosine), ExactOptions{Workers: 2, BlockSize: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(one.Indices, parallel.Indices) || !slices.Equal(one.Distances, parallel.Distances) {
+		t.Fatalf("single-worker triangular search differs from full scan\none: %#v\nfull: %#v", one, parallel)
 	}
 }
 
