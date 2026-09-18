@@ -47,6 +47,48 @@ of `(spread, min_dist)`. This preserves the fitted values and concurrency
 safety while removing that fixed cost after the first use of a configuration.
 The `curve-fit/cold` and `curve-fit/cached` stages keep both costs visible.
 
+### Layout optimization profile
+
+`BenchmarkLayoutOptimization` isolates the 100-epoch, two-component layout
+cases from issue #35. On an Intel i5-12600K with Go 1.27.1, three-run medians
+were:
+
+| Rows | Neighbors | Before | After | Change |
+|---:|---:|---:|---:|---:|
+| 64 | 15 | 14.59 ms | 10.33 ms | -29.2% |
+| 256 | 15 | 58.35 ms | 41.36 ms | -29.1% |
+| 256 | 50 | 86.71 ms | 61.91 ms | -28.6% |
+| 1,024 | 15 | 237.45 ms | 165.60 ms | -30.3% |
+
+The matched 256-row/50-neighbor end-to-end case fell from a 106.93 ms mean
+to 79.89 ms across five measured runs (-25.3%). Allocations remain at five
+per layout call with unchanged allocated bytes.
+
+Before the change, a three-second CPU profile of the 256-row/15-neighbor case
+attributed 59.6% of samples directly to `math.archExp`, `math.archLog`, and
+`math.pow`; `math.pow` was cumulatively responsible for 73.5%. Afterward,
+`fastPowf` accounts for 72.7% and the standard transcendental routines for
+less than 1%, making the remaining cost explicit rather than hiding it behind
+`math.Pow` dispatch and duplicate exponentiation.
+
+The optimized two-component loop computes each distance power once using
+float32 range reduction and bounded polynomials; `TestFastPowfAccuracy` caps
+relative error at 2e-5 over the exercised exponent range. The general
+component and density paths retain the standard-library calculation. A
+pre-filtered edge schedule was also measured, but rejected: it improved the
+256-row/50-neighbor case by only about 4% while increasing allocated bytes by
+roughly 2.6x. Keeping the existing edge scan preserves its compact allocation
+budget and deterministic update order.
+
+Reproduce the layout measurements and profile with:
+
+```sh
+go test -run '^$' -bench BenchmarkLayoutOptimization -benchmem -count 3 .
+go test -run '^$' -bench 'BenchmarkFitStages/rows/256/layout$' \
+  -benchtime=3s -cpuprofile=layout.pprof .
+go tool pprof -top layout.pprof
+```
+
 Measure peak RSS for any Go benchmark or Python reference invocation:
 
 ```sh
