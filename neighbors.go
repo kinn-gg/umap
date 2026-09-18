@@ -115,6 +115,7 @@ func ExactNeighborsWithOptions(ctx context.Context, x Matrix, k int, metric Metr
 		block = n
 	}
 	out := newNeighborHeap(n, k)
+	distance := newMatrixDistanceEvaluator(metric, x)
 	workers := boundedWorkers(opts.Workers, n)
 	if opts.MemoryBudget > 0 {
 		workers = min(workers, max(1, int(opts.MemoryBudget/max(1, int64(block)*8))))
@@ -123,9 +124,32 @@ func ExactNeighborsWithOptions(ctx context.Context, x Matrix, k int, metric Metr
 	var done atomic.Int64
 	for start := 0; start < n; start += block {
 		end := min(n, start+block)
+		if workers == 1 {
+			// Built-in metrics are symmetric. Visit the upper triangle once and
+			// insert each result into both rows. Iterating i before j preserves
+			// the same ascending candidate order (and therefore tie behavior) as
+			// the full matrix scan.
+			for i := 0; i < n; i++ {
+				if err := ctx.Err(); err != nil {
+					return Neighbors{}, err
+				}
+				for j := max(start, i); j < end; j++ {
+					d := float32(distance(i, j))
+					out.offer(i, j, d)
+					if i != j {
+						out.offer(j, i, d)
+					}
+				}
+			}
+			completed := done.Add(int64(n * (end - start)))
+			if opts.Progress != nil {
+				opts.Progress(SearchProgress{Algorithm: SearchExact, Completed: completed, Total: total})
+			}
+			continue
+		}
 		if err := parallelRows(ctx, n, workers, func(i int) {
 			for j := start; j < end; j++ {
-				out.offer(i, j, float32(MatrixDistance(metric, x, i, x, j, nil, nil)))
+				out.offer(i, j, float32(distance(i, j)))
 			}
 		}); err != nil {
 			return Neighbors{}, err
@@ -160,6 +184,7 @@ func NNDescent(ctx context.Context, x Matrix, k int, metric Metric, opts NNDesce
 		delta = .001
 	}
 	h := newNeighborHeap(n, k)
+	distance := newMatrixDistanceEvaluator(metric, x)
 	workers := boundedWorkers(opts.Workers, n)
 	// Seed with self plus a deterministic random sample. Sampling a moderately
 	// sized pool greatly improves high-dimensional starts without an RP tree and
@@ -176,7 +201,7 @@ func NNDescent(ctx context.Context, x Matrix, k int, metric Metric, opts NNDesce
 			j := (start + q*step) % n
 			if j != i {
 				selected++
-				h.offer(i, j, float32(MatrixDistance(metric, x, i, x, j, nil, nil)))
+				h.offer(i, j, float32(distance(i, j)))
 			}
 		}
 	}); err != nil {
@@ -198,7 +223,7 @@ func NNDescent(ctx context.Context, x Matrix, k int, metric Metric, opts NNDesce
 				}
 				for _, candidate := range before[j*k : (j+1)*k] {
 					if candidate >= 0 {
-						h.offer(i, candidate, float32(MatrixDistance(metric, x, i, x, candidate, nil, nil)))
+						h.offer(i, candidate, float32(distance(i, candidate)))
 					}
 				}
 			}

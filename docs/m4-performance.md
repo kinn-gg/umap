@@ -57,3 +57,36 @@ allocation, is a regression. Rerun the job once to reject transient noise. If
 the second run also exceeds the budget, the change must fail review unless its
 PR includes benchmark artifacts and an explicit baseline-update rationale.
 Budgets may never be relaxed merely to make a job pass.
+
+## Sparse cosine investigation (#29)
+
+The matched `synthetic/sparse-text` workload was dominated by exact neighbor
+search. Auto selection chose exact search because 1,000 rows is below its
+4,096-row crossover, and the original path evaluated the full 1,000 x 1,000
+distance matrix. Every distance also recomputed the squared norms of both CSR
+rows. The cost therefore came from repeated sparse cosine work, rather than
+temporary allocation or densification.
+
+Sparse cosine search now prepares one `float64` squared norm per row for the
+duration of the search. Single-worker exact search also visits one triangular
+half of the symmetric distance matrix and offers each result to both neighbor
+rows. Its iteration order preserves the full scan's ascending candidate order,
+including deterministic distance ties. Multi-worker exact search retains the
+row-owned full scan so it needs no locks or per-worker graph-sized buffers.
+
+Reproduce the isolated stage benchmark and profiles with:
+
+```sh
+go test -run '^$' -bench '^BenchmarkExactSparseTextCosine$' -benchmem -benchtime 5x .
+make profiles-sparse
+go tool pprof -top sparse-cpu.pprof
+```
+
+On Linux/amd64, Go 1.27.1, i5-12600K, one worker, the isolated optimized exact
+search takes about 62 ms and allocates 197 KiB. Five matched end-to-end samples
+improved from a local 791 ms baseline to 442 ms. Compared with the issue's
+1,123 ms Go artifact, the result is 2.5x faster. Allocated bytes changed from
+1.933 MiB to 1.941 MiB (+0.4%) and peak RSS from 25.1 MB to 26.4 MB (+5.1%),
+both inside the 10% memory budget. The remaining end-to-end time is primarily
+layout optimization; neighbor search is no longer the limiting stage for this
+case.

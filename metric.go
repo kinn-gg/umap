@@ -2,6 +2,52 @@ package umap
 
 import "math"
 
+// newMatrixDistanceEvaluator prepares immutable, fit-scoped metric state.
+// Sparse cosine search evaluates many pairs from the same matrix, so caching
+// one squared norm per row avoids repeatedly scanning both rows for every pair.
+// The returned closure is safe for concurrent use.
+func newMatrixDistanceEvaluator(metric Metric, x Matrix) func(int, int) float64 {
+	csr, ok := x.(CSR)
+	if !ok || metric.Kind != Cosine {
+		return func(a, b int) float64 {
+			return MatrixDistance(metric, x, a, x, b, nil, nil)
+		}
+	}
+	norms := make([]float64, csr.rows)
+	for row := range csr.rows {
+		_, values := csr.Row(row)
+		for _, value := range values {
+			v := float64(value)
+			norms[row] += v * v
+		}
+	}
+	return func(a, b int) float64 {
+		ac, av := csr.Row(a)
+		bc, bv := csr.Row(b)
+		dot := 0.0
+		for i, j := 0, 0; i < len(ac) && j < len(bc); {
+			switch {
+			case ac[i] < bc[j]:
+				i++
+			case bc[j] < ac[i]:
+				j++
+			default:
+				dot += float64(av[i]) * float64(bv[j])
+				i++
+				j++
+			}
+		}
+		an, bn := norms[a], norms[b]
+		if an == 0 && bn == 0 {
+			return 0
+		}
+		if an == 0 || bn == 0 {
+			return 1
+		}
+		return 1 - dot/math.Sqrt(an*bn)
+	}
+}
+
 type MetricKind uint8
 
 const (
