@@ -5,8 +5,59 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime"
 	"testing"
 )
+
+func TestParallelNeighborSearchReproducible(t *testing.T) {
+	const rows, dimensions, k = 128, 12, 8
+	data := make([]float32, rows*dimensions)
+	rng := NewRNG(77)
+	for i := range data {
+		data[i] = rng.Float32()
+	}
+	x, _ := NewDense(data, rows, dimensions)
+	var reference Neighbors
+	for _, workers := range []int{1, 2, 4, 8, runtime.GOMAXPROCS(0)} {
+		got, err := ExactNeighborsWithOptions(context.Background(), x, k, NewMetric(Euclidean), ExactOptions{Workers: workers, BlockSize: 31})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reference.Indices == nil {
+			reference = got
+			continue
+		}
+		for i := range got.Indices {
+			if got.Indices[i] != reference.Indices[i] || got.Distances[i] != reference.Distances[i] {
+				t.Fatalf("workers=%d differs at %d", workers, i)
+			}
+		}
+	}
+	var approximate Neighbors
+	for _, workers := range []int{1, 2, 4, 8} {
+		got, err := NNDescent(context.Background(), x, k, NewMetric(Euclidean), NNDescentOptions{Seed: 42, Workers: workers, MaxIterations: 8})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if approximate.Indices == nil {
+			approximate = got
+			continue
+		}
+		for i := range got.Indices {
+			if got.Indices[i] != approximate.Indices[i] || got.Distances[i] != approximate.Distances[i] {
+				t.Fatalf("NN-descent workers=%d differs at %d", workers, i)
+			}
+		}
+	}
+}
+
+func TestHotPathAllocationGate(t *testing.T) {
+	a, b := make([]float32, 128), make([]float32, 128)
+	metric := NewMetric(Euclidean)
+	if got := testing.AllocsPerRun(1000, func() { _ = metric.Distance(a, b) }); got != 0 {
+		t.Fatalf("metric hot path allocates %.2f objects/run", got)
+	}
+}
 
 func TestExactNeighborsBlockedTiesAndSelf(t *testing.T) {
 	x, _ := NewDense([]float32{0, 0, 1, -1}, 4, 1)
@@ -175,6 +226,24 @@ func BenchmarkNeighborSearchCrossover(b *testing.B) {
 		b.Run(fmt.Sprintf("nndescent/%d", rows), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				_, _ = NNDescent(context.Background(), x, 15, NewMetric(Euclidean), NNDescentOptions{Seed: 1})
+			}
+		})
+	}
+}
+
+func BenchmarkExactNeighborWorkers(b *testing.B) {
+	const rows, dimensions = 512, 32
+	data := make([]float32, rows*dimensions)
+	rng := NewRNG(99)
+	for i := range data {
+		data[i] = rng.Float32()
+	}
+	x, _ := NewDense(data, rows, dimensions)
+	for _, workers := range []int{1, 2, 4, 8, runtime.GOMAXPROCS(0)} {
+		b.Run(fmt.Sprintf("workers/%d", workers), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				_, _ = ExactNeighborsWithOptions(context.Background(), x, 15, NewMetric(Euclidean), ExactOptions{Workers: workers})
 			}
 		})
 	}

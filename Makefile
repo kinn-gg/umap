@@ -1,6 +1,8 @@
-.PHONY: test parity-generate parity-full bench-go bench-python
+.PHONY: test race parity-generate parity-full bench-go bench-python profiles
 test:
 	go test ./...
+race:
+	go test -race ./...
 parity-generate:
 	uv run --project parity --locked python parity/generate.py --suite full
 parity-full:
@@ -10,3 +12,5 @@ bench-go:
 	go test -run '^$$' -bench . -benchmem -count 5 ./...
 bench-python:
 	uv run --project parity --locked python benchmarks/python_reference.py --suite fast --repeats 5
+profiles:
+	go test -run '^$$' -bench BenchmarkExactNeighborWorkers -benchtime 5x -cpuprofile cpu.pprof -memprofile heap.pprof .

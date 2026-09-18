@@ -3,6 +3,9 @@ package umap
 import (
 	"context"
 	"math"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -27,6 +30,7 @@ type ExactOptions struct {
 	// it is derived from MemoryBudget, or defaults to 256.
 	BlockSize    int
 	MemoryBudget int64
+	Workers      int
 	Progress     ProgressFunc
 }
 
@@ -36,6 +40,7 @@ type NNDescentOptions struct {
 	CandidatePoolSize int
 	ConvergenceDelta  float64
 	Progress          ProgressFunc
+	Workers           int
 }
 
 type NeighborSearchOptions struct {
@@ -85,7 +90,7 @@ func ExactNeighborsWithOptions(ctx context.Context, x Matrix, k int, metric Metr
 	if n < 2 || k < 1 || k >= n {
 		return Neighbors{}, validationf("neighbors must be in [1, rows)")
 	}
-	if opts.BlockSize < 0 || opts.MemoryBudget < 0 {
+	if opts.BlockSize < 0 || opts.MemoryBudget < 0 || opts.Workers < 0 {
 		return Neighbors{}, validationf("exact-search limits cannot be negative")
 	}
 	if ctx == nil {
@@ -110,21 +115,24 @@ func ExactNeighborsWithOptions(ctx context.Context, x Matrix, k int, metric Metr
 		block = n
 	}
 	out := newNeighborHeap(n, k)
+	workers := boundedWorkers(opts.Workers, n)
+	if opts.MemoryBudget > 0 {
+		workers = min(workers, max(1, int(opts.MemoryBudget/max(1, int64(block)*8))))
+	}
 	total := int64(n) * int64(n)
-	done := int64(0)
+	var done atomic.Int64
 	for start := 0; start < n; start += block {
 		end := min(n, start+block)
-		for i := 0; i < n; i++ {
+		if err := parallelRows(ctx, n, workers, func(i int) {
 			for j := start; j < end; j++ {
 				out.offer(i, j, float32(MatrixDistance(metric, x, i, x, j, nil, nil)))
 			}
-		}
-		done += int64(n * (end - start))
-		if err := ctx.Err(); err != nil {
+		}); err != nil {
 			return Neighbors{}, err
 		}
+		completed := done.Add(int64(n * (end - start)))
 		if opts.Progress != nil {
-			opts.Progress(SearchProgress{Algorithm: SearchExact, Completed: done, Total: total})
+			opts.Progress(SearchProgress{Algorithm: SearchExact, Completed: completed, Total: total})
 		}
 	}
 	return out.neighbors(), nil
@@ -152,28 +160,27 @@ func NNDescent(ctx context.Context, x Matrix, k int, metric Metric, opts NNDesce
 		delta = .001
 	}
 	h := newNeighborHeap(n, k)
-	rng := NewRNG(opts.Seed)
-	seen := make([]uint32, n)
+	workers := boundedWorkers(opts.Workers, n)
 	// Seed with self plus a deterministic random sample. Sampling a moderately
 	// sized pool greatly improves high-dimensional starts without an RP tree and
 	// remains O(n*k) in retained memory.
-	for i := 0; i < n; i++ {
-		if err := ctx.Err(); err != nil {
-			return Neighbors{}, err
-		}
+	if err := parallelRows(ctx, n, workers, func(i int) {
+		rng := NewRNG(DeriveSeed(opts.Seed^uint64(i), "nndescent-row"))
 		h.offer(i, i, 0)
-		stamp := uint32(i + 1)
-		seen[i] = stamp
-		selected := 1
-		for selected < pool {
-			j := int(rng.Uint64() % uint64(n))
-			if seen[j] == stamp {
-				continue
-			}
-			seen[j] = stamp
-			selected++
-			h.offer(i, j, float32(MatrixDistance(metric, x, i, x, j, nil, nil)))
+		start := int(rng.Uint64() % uint64(n))
+		step := int(rng.Uint64()%uint64(max(1, n-1))) + 1
+		for gcd(step, n) != 1 {
+			step = step%n + 1
 		}
+		for selected, q := 1, 0; selected < pool; q++ {
+			j := (start + q*step) % n
+			if j != i {
+				selected++
+				h.offer(i, j, float32(MatrixDistance(metric, x, i, x, j, nil, nil)))
+			}
+		}
+	}); err != nil {
+		return Neighbors{}, err
 	}
 	for iteration := 0; iteration < iterations; iteration++ {
 		if err := ctx.Err(); err != nil {
@@ -183,7 +190,7 @@ func NNDescent(ctx context.Context, x Matrix, k int, metric Metric, opts NNDesce
 		changes := 0
 		// Neighbor propagation: friends-of-friends form the candidate set. The
 		// sorted retained lists make traversal and tie behavior reproducible.
-		for i := 0; i < n; i++ {
+		if err := parallelRows(ctx, n, workers, func(i int) {
 			row := before[i*k : (i+1)*k]
 			for _, j := range row {
 				if j < 0 {
@@ -195,6 +202,8 @@ func NNDescent(ctx context.Context, x Matrix, k int, metric Metric, opts NNDesce
 					}
 				}
 			}
+		}); err != nil {
+			return Neighbors{}, err
 		}
 		for i, v := range h.indices {
 			if v != before[i] {
@@ -209,6 +218,52 @@ func NNDescent(ctx context.Context, x Matrix, k int, metric Metric, opts NNDesce
 		}
 	}
 	return h.neighbors(), nil
+}
+
+func gcd(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
+}
+
+func boundedWorkers(requested, jobs int) int {
+	if requested == 0 {
+		requested = runtime.GOMAXPROCS(0)
+	}
+	if requested < 1 {
+		requested = 1
+	}
+	return min(requested, max(1, jobs))
+}
+
+func parallelRows(ctx context.Context, rows, workers int, fn func(int)) error {
+	if workers <= 1 {
+		for i := 0; i < rows; i++ {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			fn(i)
+		}
+		return nil
+	}
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= rows || ctx.Err() != nil {
+					return
+				}
+				fn(i)
+			}
+		}()
+	}
+	wg.Wait()
+	return ctx.Err()
 }
 
 func FindNeighbors(ctx context.Context, x Matrix, k int, metric Metric, opts NeighborSearchOptions) (Neighbors, error) {
