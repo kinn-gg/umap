@@ -30,6 +30,23 @@ blocked exact search with NN-descent at 256, 1,024, and 4,096 rows, and
 data. Recall and fixed-seed reproducibility are enforced separately in the
 fast test suite so benchmark tuning cannot silently trade away quality.
 
+`BenchmarkFitStages` profiles the matched 64- and 256-row configurations by
+curve fitting, exact neighbor search, smooth-kNN calibration, fuzzy-graph
+construction, random initialization, layout optimization, and model-input
+cloning. Run it independently to avoid mixing stage timings with the parity
+harness:
+
+```sh
+go test -run '^$' -bench BenchmarkFitStages -benchmem -count 5 .
+```
+
+The small-input investigation found that the input-independent `FitAB` curve
+fit dominated the 64-row path: it evaluates 300 samples for 2,000 optimizer
+steps for every call. Completed fits are now cached by the exact IEEE-754 bits
+of `(spread, min_dist)`. This preserves the fitted values and concurrency
+safety while removing that fixed cost after the first use of a configuration.
+The `curve-fit/cold` and `curve-fit/cached` stages keep both costs visible.
+
 Measure peak RSS for any Go benchmark or Python reference invocation:
 
 ```sh
