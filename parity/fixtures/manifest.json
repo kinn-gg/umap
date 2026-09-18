@@ -1,0 +1,24 @@
+{
+  "fixtures": [
+    {
+      "file": "dense.json",
+      "input_sha256": "4d6bc237e189116edc9546bccfd24535ff55c5bc630dc358e496019683e51633",
+      "name": "dense",
+      "suite": "fast"
+    },
+    {
+      "file": "duplicated.json",
+      "input_sha256": "67dc25e6b77fdfb3135c2ed2c3c00aa96860a469588930a8e545f7003c1835c7",
+      "name": "duplicated",
+      "suite": "fast"
+    },
+    {
+      "file": "degenerate.json",
+      "input_sha256": "8097fc8f7fa11319609c533dcd1ad79dd9f21529c1a9637d75418d42cc357f94",
+      "name": "degenerate",
+      "suite": "fast"
+    }
+  ],
+  "reference_commit": "cdb0eeb236f5d6759e0c3dd1fe132aef4db9e7b1",
+  "schema_version": 1
+}
