@@ -2,3 +2,6 @@
 *.pprof
 *.bench
 *.test
+go-umap-bench.jsonl
+python-umap-bench.jsonl
+umap-comparison.json

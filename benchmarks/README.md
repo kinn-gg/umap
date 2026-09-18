@@ -61,6 +61,30 @@ Numba JIT cost is explicitly excluded and reported as `warmup_ns`. Pass
 retained-heap values come from a separate `tracemalloc` probe, so tracing
 overhead does not contaminate the reported runtime samples.
 
+## Matched Go/Python comparison
+
+Run the end-to-end comparison with:
+
+```sh
+make bench-compare
+```
+
+The matched suite fits both implementations on byte-identical dense and CSR
+inputs with the same seed, metric, neighbor count, component count, 100 epochs,
+random initialization, and one worker. A small cross-language SplitMix64 input
+generator avoids checking large benchmark datasets into the repository. The
+comparison command verifies every parameter object and canonical input SHA-256
+before reporting median fit time and allocation measurements; it fails rather
+than comparing mismatched cases.
+
+The generated files are `go-umap-bench.jsonl`, `python-umap-bench.jsonl`, and
+`umap-comparison.json`. CI also stores a Markdown summary. Go allocated bytes
+come from `runtime.MemStats.TotalAlloc`; Python's allocation peak comes from
+`tracemalloc`, so each is useful for regressions within its runtime but their
+ratio is not a direct heap-efficiency claim. Peak RSS includes each language
+runtime and rises monotonically over the process; compare matching case order
+and runner versions only.
+
 ## Initial budgets
 
 These are infrastructure budgets, not claims about the future Go UMAP runtime.
