@@ -7,6 +7,27 @@ import "math"
 // one squared norm per row avoids repeatedly scanning both rows for every pair.
 // The returned closure is safe for concurrent use.
 func newMatrixDistanceEvaluator(metric Metric, x Matrix) func(int, int) float64 {
+	dense, denseOK := x.(Dense)
+	if denseOK {
+		switch metric.Kind {
+		case Euclidean:
+			return func(a, b int) float64 {
+				return math.Sqrt(denseSquaredEuclidean(dense.Row(a), dense.Row(b)))
+			}
+		case SquaredEuclidean:
+			return func(a, b int) float64 {
+				return denseSquaredEuclidean(dense.Row(a), dense.Row(b))
+			}
+		case Cosine:
+			norms := make([]float64, dense.rows)
+			for row := range dense.rows {
+				norms[row] = denseSquaredNorm(dense.Row(row))
+			}
+			return func(a, b int) float64 {
+				return denseCosine(dense.Row(a), dense.Row(b), norms[a], norms[b])
+			}
+		}
+	}
 	csr, ok := x.(CSR)
 	if !ok || metric.Kind != Cosine {
 		return func(a, b int) float64 {
@@ -48,6 +69,59 @@ func newMatrixDistanceEvaluator(metric Metric, x Matrix) func(int, int) float64 
 	}
 }
 
+// denseSquaredEuclidean is deliberately kept small and portable. Processing
+// four values per iteration reduces loop and metric-dispatch overhead while
+// retaining the original left-to-right accumulation order.
+func denseSquaredEuclidean(a, b []float32) float64 {
+	sum := 0.0
+	i := 0
+	for ; i+3 < len(a); i += 4 {
+		d := float64(a[i]) - float64(b[i])
+		sum += d * d
+		d = float64(a[i+1]) - float64(b[i+1])
+		sum += d * d
+		d = float64(a[i+2]) - float64(b[i+2])
+		sum += d * d
+		d = float64(a[i+3]) - float64(b[i+3])
+		sum += d * d
+	}
+	for ; i < len(a); i++ {
+		d := float64(a[i]) - float64(b[i])
+		sum += d * d
+	}
+	return sum
+}
+
+func denseSquaredNorm(a []float32) float64 {
+	sum := 0.0
+	for _, value := range a {
+		v := float64(value)
+		sum += v * v
+	}
+	return sum
+}
+
+func denseCosine(a, b []float32, an, bn float64) float64 {
+	dot := 0.0
+	i := 0
+	for ; i+3 < len(a); i += 4 {
+		dot += float64(a[i]) * float64(b[i])
+		dot += float64(a[i+1]) * float64(b[i+1])
+		dot += float64(a[i+2]) * float64(b[i+2])
+		dot += float64(a[i+3]) * float64(b[i+3])
+	}
+	for ; i < len(a); i++ {
+		dot += float64(a[i]) * float64(b[i])
+	}
+	if an == 0 && bn == 0 {
+		return 0
+	}
+	if an == 0 || bn == 0 {
+		return 1
+	}
+	return 1 - dot/math.Sqrt(an*bn)
+}
+
 type MetricKind uint8
 
 const (
@@ -82,6 +156,12 @@ func MinkowskiMetric(p float64) (Metric, error) {
 func (m Metric) Distance(a, b []float32) float64 {
 	if len(a) != len(b) {
 		panic("umap: metric vector length mismatch")
+	}
+	switch m.Kind {
+	case Euclidean:
+		return math.Sqrt(denseSquaredEuclidean(a, b))
+	case SquaredEuclidean:
+		return denseSquaredEuclidean(a, b)
 	}
 	sum, maxv, dot, an, bn, ma, mb := 0., 0., 0., 0., 0., 0., 0.
 	if m.Kind == Correlation && len(a) > 0 {
