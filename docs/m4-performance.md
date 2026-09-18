@@ -40,9 +40,10 @@ worker cap and memory estimate prevent unbounded per-worker growth.
 
 ## Regression policy
 
-Every pull request runs parity, the race detector, supported Go versions, and
-the allocation gate. The Monday scheduled workflow stores five-sample Go and
-pinned-Python results plus peak RSS for 90 days. Compare only artifacts with
+Every pull request runs parity, the race detector, supported Go versions, the
+allocation gate, five-sample Go and pinned-Python benchmarks, and peak RSS.
+The benchmark workflow stores its machine-readable artifacts for 90 days.
+Compare only artifacts with
 matching inputs, architecture, Go/Python versions, and warmup policy.
 
 A median runtime or peak-RSS increase above 10%, or any nonzero metric-loop

@@ -63,7 +63,7 @@ def run_once(x,p):
     timings={};start=time.perf_counter_ns();idx,dist,_=nearest_neighbors(x,p["neighbors"],p["metric"],{},False,SEED,False);timings["knn"]=time.perf_counter_ns()-start
     start=time.perf_counter_ns();sigmas,rhos=smooth_knn_dist(dist.astype(np.float32),float(p["neighbors"]),local_connectivity=1.);timings["smooth_knn"]=time.perf_counter_ns()-start
     start=time.perf_counter_ns();fuzzy_simplicial_set(x,p["neighbors"],check_random_state(SEED),p["metric"],{},knn_indices=idx,knn_dists=dist,set_op_mix_ratio=1.,local_connectivity=1.);timings["fuzzy_graph"]=time.perf_counter_ns()-start
-    init=check_random_state(SEED).uniform(-10,10,size=(len(x),p["components"])).astype(np.float32)
+    init=check_random_state(SEED).uniform(-10,10,size=(x.shape[0],p["components"])).astype(np.float32)
     start=time.perf_counter_ns();umap.UMAP(n_neighbors=p["neighbors"],n_components=p["components"],metric=p["metric"],n_epochs=100,init=init,random_state=SEED,n_jobs=1).fit(x);timings["fit_end_to_end"]=time.perf_counter_ns()-start
     timings["total"]=timings["fit_end_to_end"];return timings
 
