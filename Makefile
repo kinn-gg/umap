@@ -1,4 +1,4 @@
-.PHONY: test race parity-generate parity-full bench-go bench-density bench-python bench-compare profiles profiles-sparse
+.PHONY: test race parity-generate parity-full bench-go bench-density bench-python bench-compare profiles profiles-small profiles-sparse
 test:
 	go test ./...
 race:
@@ -20,5 +20,7 @@ bench-compare:
 	uv run --project parity --locked python benchmarks/compare.py --go go-umap-bench.jsonl --python python-umap-bench.jsonl --output umap-comparison.json
 profiles:
 	go test -run '^$$' -bench BenchmarkExactNeighborWorkers -benchtime 5x -cpuprofile cpu.pprof -memprofile heap.pprof .
+profiles-small:
+	go test -run '^$$' -bench BenchmarkFitStages -benchtime 5x -cpuprofile small-input.cpu.pprof -memprofile small-input.heap.pprof .
 profiles-sparse:
 	go test -run '^$$' -bench BenchmarkExactSparseTextCosine -benchtime 3x -cpuprofile sparse-cpu.pprof -memprofile sparse-heap.pprof .

@@ -3,6 +3,7 @@ package umap
 import (
 	"context"
 	"math"
+	"sync"
 )
 
 type Init uint8
@@ -110,7 +111,34 @@ func SpectralEmbedding(g Graph, components int, seed uint64) []float32 {
 	return out
 }
 
+type abCacheKey struct {
+	spread, minDist uint64
+}
+
+type abCacheValue struct {
+	a, b float64
+}
+
+var fittedAB sync.Map
+
+// FitAB fits the differentiable distance curve used by the layout optimizer.
+// Configurations are commonly reused across fits, and the fit is independent
+// of the input data, so retain completed results. sync.Map keeps the hot path
+// lock-free while allowing reducers with different configurations to fit in
+// parallel safely.
 func FitAB(spread, minDist float64) (a, b float64) {
+	key := abCacheKey{math.Float64bits(spread), math.Float64bits(minDist)}
+	if cached, ok := fittedAB.Load(key); ok {
+		v := cached.(abCacheValue)
+		return v.a, v.b
+	}
+	a, b = fitAB(spread, minDist)
+	actual, _ := fittedAB.LoadOrStore(key, abCacheValue{a, b})
+	v := actual.(abCacheValue)
+	return v.a, v.b
+}
+
+func fitAB(spread, minDist float64) (a, b float64) {
 	a, b = 1.576943460, 0.895060879
 	lr := .01
 	for it := 0; it < 2000; it++ {
