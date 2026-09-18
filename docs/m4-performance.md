@@ -40,6 +40,12 @@ worker cap and memory estimate prevent unbounded per-worker growth.
 
 ## Regression policy
 
+Run `make bench-density` to measure densMAP separately. Its `disabled` and
+`enabled` sub-benchmarks use identical data, seeds, and epochs; the difference
+is the density objective and its `O(rows)` radius/error buffers. The disabled
+case is also the ordinary-path guard: density radius buffers are never created
+unless densMAP or density output is requested.
+
 Every pull request runs parity, the race detector, supported Go versions, the
 allocation gate, five-sample Go and pinned-Python benchmarks, and peak RSS.
 The benchmark workflow stores its machine-readable artifacts for 90 days.

@@ -20,6 +20,7 @@ type serialConfig struct {
 	Init                                              Init
 	TransformSeed                                     uint64
 	Target                                            TargetConfig
+	Density                                           DensityConfig
 }
 
 type serialMatrix struct {
@@ -31,19 +32,26 @@ type serialMatrix struct {
 }
 
 type serialModel struct {
-	Version   int
-	Config    serialConfig
-	Seed      uint64
-	Training  serialMatrix
-	Embedding []float32
-	Graph     Graph
+	Version                       int
+	Config                        serialConfig
+	Seed                          uint64
+	Training                      serialMatrix
+	Embedding                     []float32
+	Graph                         Graph
+	OriginalRadii, EmbeddingRadii []float32
 }
 
 func (m *Model) MarshalBinary() ([]byte, error) {
 	if m == nil || m.embedding == nil || m.training == nil {
 		return nil, validationf("model is not fitted")
 	}
-	sm := serialModel{Version: 1, Config: configForSerialization(m.config), Seed: m.seed, Embedding: m.embedding.data, Graph: m.graph}
+	sm := serialModel{Version: 2, Config: configForSerialization(m.config), Seed: m.seed, Embedding: m.embedding.data, Graph: m.graph}
+	if m.originalRadii != nil {
+		sm.OriginalRadii = m.originalRadii.data
+	}
+	if m.embeddingRadii != nil {
+		sm.EmbeddingRadii = m.embeddingRadii.data
+	}
 	switch x := m.training.(type) {
 	case Dense:
 		sm.Training = serialMatrix{Kind: "dense", Data: x.data, Rows: x.rows, Features: x.columns}
@@ -87,7 +95,7 @@ func UnmarshalModel(data []byte) (*Model, error) {
 	if err := json.Unmarshal(payload, &sm); err != nil {
 		return nil, validationf("decode model: %v", err)
 	}
-	if sm.Version != 1 || sm.Training.Rows < 2 || sm.Training.Features < 1 || sm.Config.Components < 1 || sm.Graph.Vertices != sm.Training.Rows || sm.Training.Rows > int(^uint(0)>>1)/sm.Config.Components || len(sm.Embedding) != sm.Training.Rows*sm.Config.Components {
+	if (sm.Version != 1 && sm.Version != 2) || sm.Training.Rows < 2 || sm.Training.Features < 1 || sm.Config.Components < 1 || sm.Graph.Vertices != sm.Training.Rows || sm.Training.Rows > int(^uint(0)>>1)/sm.Config.Components || len(sm.Embedding) != sm.Training.Rows*sm.Config.Components || (len(sm.OriginalRadii) != 0 && len(sm.OriginalRadii) != sm.Training.Rows) || (len(sm.EmbeddingRadii) != 0 && len(sm.EmbeddingRadii) != sm.Training.Rows) {
 		return nil, validationf("invalid model contents")
 	}
 	cfg := configFromSerialization(sm.Config)
@@ -112,17 +120,24 @@ func UnmarshalModel(data []byte) (*Model, error) {
 			return nil, validationf("invalid serialized graph")
 		}
 	}
-	for _, v := range sm.Embedding {
+	for _, v := range append(append(sm.Embedding, sm.OriginalRadii...), sm.EmbeddingRadii...) {
 		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
 			return nil, numericf("serialized embedding contains non-finite value")
 		}
 	}
 	emb := &Embedding{data: append([]float32(nil), sm.Embedding...), rows: sm.Training.Rows, components: cfg.Components}
-	return &Model{embedding: emb, graph: sm.Graph, seed: sm.Seed, config: cfg, training: training}, nil
+	m := &Model{embedding: emb, graph: sm.Graph, seed: sm.Seed, config: cfg, training: training}
+	if len(sm.OriginalRadii) > 0 {
+		m.originalRadii = &Vector{append([]float32(nil), sm.OriginalRadii...)}
+	}
+	if len(sm.EmbeddingRadii) > 0 {
+		m.embeddingRadii = &Vector{append([]float32(nil), sm.EmbeddingRadii...)}
+	}
+	return m, nil
 }
 
 func configForSerialization(c Config) serialConfig {
-	return serialConfig{c.Neighbors, c.Components, c.Epochs, c.NegativeSampleRate, c.Metric, c.LearningRate, c.MinDist, c.Spread, c.SetOpMixRatio, c.LocalConnectivity, c.RepulsionStrength, c.A, c.B, c.Init, c.TransformSeed, c.Target}
+	return serialConfig{Neighbors: c.Neighbors, Components: c.Components, Epochs: c.Epochs, NegativeSampleRate: c.NegativeSampleRate, Metric: c.Metric, LearningRate: c.LearningRate, MinDist: c.MinDist, Spread: c.Spread, SetOpMixRatio: c.SetOpMixRatio, LocalConnectivity: c.LocalConnectivity, RepulsionStrength: c.RepulsionStrength, A: c.A, B: c.B, Init: c.Init, TransformSeed: c.TransformSeed, Target: c.Target, Density: c.Density}
 }
 
 func configFromSerialization(s serialConfig) Config {
@@ -131,6 +146,7 @@ func configFromSerialization(s serialConfig) Config {
 	c.Metric, c.LearningRate, c.MinDist, c.Spread = s.Metric, s.LearningRate, s.MinDist, s.Spread
 	c.SetOpMixRatio, c.LocalConnectivity, c.RepulsionStrength = s.SetOpMixRatio, s.LocalConnectivity, s.RepulsionStrength
 	c.A, c.B, c.Init, c.TransformSeed, c.Target = s.A, s.B, s.Init, s.TransformSeed, s.Target
+	c.Density = s.Density
 	seed := uint64(0)
 	c.Seed = &seed
 	return c

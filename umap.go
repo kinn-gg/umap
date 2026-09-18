@@ -23,10 +23,18 @@ type Config struct {
 	Progress                                                             ProgressFunc
 	TransformSeed                                                        uint64
 	Target                                                               TargetConfig
+	Density                                                              DensityConfig
+}
+
+// DensityConfig controls densMAP and density-radius output. Enabled adds the
+// density-correlation objective; Output records radii without changing layout.
+type DensityConfig struct {
+	Enabled, Output                 bool
+	Lambda, Fraction, VarianceShift float32
 }
 
 func DefaultConfig() Config {
-	return Config{Neighbors: 15, Components: 2, Metric: NewMetric(Euclidean), LearningRate: 1, Init: SpectralInit, MinDist: .1, Spread: 1, SetOpMixRatio: 1, LocalConnectivity: 1, RepulsionStrength: 1, NegativeSampleRate: 5, TransformSeed: 42, Target: TargetConfig{Weight: .5}}
+	return Config{Neighbors: 15, Components: 2, Metric: NewMetric(Euclidean), LearningRate: 1, Init: SpectralInit, MinDist: .1, Spread: 1, SetOpMixRatio: 1, LocalConnectivity: 1, RepulsionStrength: 1, NegativeSampleRate: 5, TransformSeed: 42, Target: TargetConfig{Weight: .5}, Density: DensityConfig{Lambda: 2, Fraction: .3, VarianceShift: .1}}
 }
 
 type UMAP struct{ config Config }
@@ -67,7 +75,7 @@ func NewContinuous(values []float32) (Continuous, error) {
 
 func New(c Config) (*UMAP, error) {
 	finite := func(v float32) bool { return !math.IsNaN(float64(v)) && !math.IsInf(float64(v), 0) }
-	if c.Neighbors < 2 || c.Components < 1 || c.Epochs < 0 || c.Workers < 0 || c.LearningRate <= 0 || c.Spread <= 0 || c.MinDist < 0 || c.MinDist > c.Spread || c.SetOpMixRatio < 0 || c.SetOpMixRatio > 1 || c.LocalConnectivity < 0 || c.RepulsionStrength < 0 || c.NegativeSampleRate < 0 || c.MemoryBudget < 0 || c.Target.Weight < 0 || c.Target.Weight > 1 || c.Target.Neighbors < 0 || !finite(c.LearningRate) || !finite(c.Spread) || !finite(c.MinDist) || !finite(c.SetOpMixRatio) || !finite(c.LocalConnectivity) || !finite(c.RepulsionStrength) || !finite(c.Target.Weight) || !finite(c.A) || !finite(c.B) {
+	if c.Neighbors < 2 || c.Components < 1 || c.Epochs < 0 || c.Workers < 0 || c.LearningRate <= 0 || c.Spread <= 0 || c.MinDist < 0 || c.MinDist > c.Spread || c.SetOpMixRatio < 0 || c.SetOpMixRatio > 1 || c.LocalConnectivity < 0 || c.RepulsionStrength < 0 || c.NegativeSampleRate < 0 || c.MemoryBudget < 0 || c.Target.Weight < 0 || c.Target.Weight > 1 || c.Target.Neighbors < 0 || c.Density.Lambda < 0 || c.Density.Fraction < 0 || c.Density.Fraction > 1 || c.Density.VarianceShift < 0 || !finite(c.LearningRate) || !finite(c.Spread) || !finite(c.MinDist) || !finite(c.SetOpMixRatio) || !finite(c.LocalConnectivity) || !finite(c.RepulsionStrength) || !finite(c.Target.Weight) || !finite(c.Density.Lambda) || !finite(c.Density.Fraction) || !finite(c.Density.VarianceShift) || !finite(c.A) || !finite(c.B) {
 		return nil, validationf("invalid UMAP configuration")
 	}
 	if (c.A == 0) != (c.B == 0) {
@@ -98,11 +106,42 @@ func (e *Embedding) CopyTo(dst []float32) error {
 }
 
 type Model struct {
-	embedding *Embedding
-	graph     Graph
-	seed      uint64
-	config    Config
-	training  Matrix
+	embedding                     *Embedding
+	graph                         Graph
+	seed                          uint64
+	config                        Config
+	training                      Matrix
+	originalRadii, embeddingRadii *Vector
+}
+
+// Vector is an immutable learned one-dimensional output.
+type Vector struct{ data []float32 }
+
+func (v *Vector) Len() int {
+	if v == nil {
+		return 0
+	}
+	return len(v.data)
+}
+func (v *Vector) At(i int) float32 { return v.data[i] }
+func (v *Vector) CopyTo(dst []float32) error {
+	if v == nil || len(dst) != len(v.data) {
+		return shapef("vector destination has wrong length")
+	}
+	copy(dst, v.data)
+	return nil
+}
+func (m *Model) OriginalRadii() (*Vector, bool) {
+	if m == nil || m.originalRadii == nil {
+		return nil, false
+	}
+	return m.originalRadii, true
+}
+func (m *Model) EmbeddingRadii() (*Vector, bool) {
+	if m == nil || m.embeddingRadii == nil {
+		return nil, false
+	}
+	return m.embeddingRadii, true
 }
 
 func (m *Model) Embedding() *Embedding { return m.embedding }
@@ -183,7 +222,11 @@ func (u *UMAP) FitTransform(ctx context.Context, x Matrix, y Target) (*Model, *E
 			epochs = 500
 		}
 	}
-	data, err := optimizeLayoutContext(ctx, init, graph, cfg.Components, epochs, cfg.LearningRate, a, b, cfg.RepulsionStrength, cfg.NegativeSampleRate, seed)
+	var originalRadii []float32
+	if cfg.Density.Enabled || cfg.Density.Output {
+		originalRadii = graphRadiiMatrix(graph, x, cfg.Metric)
+	}
+	data, err := optimizeLayoutDensityContext(ctx, init, graph, cfg.Components, epochs, cfg.LearningRate, a, b, cfg.RepulsionStrength, cfg.NegativeSampleRate, seed, originalRadii, cfg.Density)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -193,6 +236,10 @@ func (u *UMAP) FitTransform(ctx context.Context, x Matrix, y Target) (*Model, *E
 		return nil, nil, err
 	}
 	m := &Model{embedding: e, graph: graph, seed: seed, config: cfg, training: training}
+	if cfg.Density.Enabled || cfg.Density.Output {
+		m.originalRadii = &Vector{originalRadii}
+		m.embeddingRadii = &Vector{graphRadiiEmbedding(graph, data, cfg.Components)}
+	}
 	return m, e, nil
 }
 
