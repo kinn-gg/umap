@@ -184,6 +184,8 @@ func optimizeLayoutDensityContext(ctx context.Context, initial []float32, g Grap
 		return out, ctx.Err()
 	}
 	rng := NewRNG(DeriveSeed(seed, "layout"))
+	rngBound := uint64(g.Vertices)
+	rngLimit := ^uint64(0) - (^uint64(0) % rngBound)
 	maxWeight := float32(0)
 	for _, e := range g.Edges {
 		if e.Weight > maxWeight {
@@ -214,23 +216,40 @@ func optimizeLayoutDensityContext(ctx context.Context, initial []float32, g Grap
 			if nextSample[ei] > float32(epoch) {
 				continue
 			}
-			dist2 := float32(0)
-			for c := 0; c < components; c++ {
-				d := out[e.Head*components+c] - out[e.Tail*components+c]
-				dist2 += d * d
-			}
-			if dist2 > 0 {
-				gradCoeff := -2 * a * b * float32(math.Pow(float64(dist2), float64(b-1))) / (a*float32(math.Pow(float64(dist2), float64(b))) + 1)
-				// The density term pulls an edge together when its endpoints are
-				// locally too diffuse and pushes it apart when too concentrated.
-				if densityError != nil {
-					gradCoeff -= density.Lambda * (densityError[e.Head] + densityError[e.Tail]) / (dist2 + density.VarianceShift)
+			head, tail := e.Head, e.Tail
+			if components == 2 && densityError == nil {
+				x := out[head*2] - out[tail*2]
+				y := out[head*2+1] - out[tail*2+1]
+				dist2 := x*x + y*y
+				if dist2 > 0 {
+					distPow := fastPowf(dist2, b)
+					gradCoeff := -2 * a * b * (distPow / dist2) / (a*distPow + 1)
+					gradX := clamp(gradCoeff*x, -4, 4) * alpha
+					gradY := clamp(gradCoeff*y, -4, 4) * alpha
+					out[head*2] += gradX
+					out[tail*2] -= gradX
+					out[head*2+1] += gradY
+					out[tail*2+1] -= gradY
 				}
+			} else {
+				dist2 := float32(0)
 				for c := 0; c < components; c++ {
-					d := out[e.Head*components+c] - out[e.Tail*components+c]
-					grad := clamp(gradCoeff*d, -4, 4) * alpha
-					out[e.Head*components+c] += grad
-					out[e.Tail*components+c] -= grad
+					d := out[head*components+c] - out[tail*components+c]
+					dist2 += d * d
+				}
+				if dist2 > 0 {
+					gradCoeff := -2 * a * b * float32(math.Pow(float64(dist2), float64(b-1))) / (a*float32(math.Pow(float64(dist2), float64(b))) + 1)
+					// The density term pulls an edge together when its endpoints are
+					// locally too diffuse and pushes it apart when too concentrated.
+					if densityError != nil {
+						gradCoeff -= density.Lambda * (densityError[head] + densityError[tail]) / (dist2 + density.VarianceShift)
+					}
+					for c := 0; c < components; c++ {
+						d := out[head*components+c] - out[tail*components+c]
+						grad := clamp(gradCoeff*d, -4, 4) * alpha
+						out[head*components+c] += grad
+						out[tail*components+c] -= grad
+					}
 				}
 			}
 			nextSample[ei] += epochsPerSample[ei]
@@ -239,20 +258,32 @@ func optimizeLayoutDensityContext(ctx context.Context, initial []float32, g Grap
 				nNeg = int((float32(epoch) - nextNegative[ei]) / (epochsPerSample[ei] / float32(negativeRate)))
 			}
 			for q := 0; q < nNeg; q++ {
-				k := rng.Intn(g.Vertices)
-				if k == e.Head {
+				k := rng.intnBounded(rngBound, rngLimit)
+				if k == head {
+					continue
+				}
+				if components == 2 && densityError == nil {
+					x := out[head*2] - out[k*2]
+					y := out[head*2+1] - out[k*2+1]
+					d2 := x*x + y*y
+					if d2 > 0 {
+						distPow := fastPowf(d2, b)
+						coeff := 2 * repulsion * b / ((.001 + d2) * (a*distPow + 1))
+						out[head*2] += clamp(coeff*x, -4, 4) * alpha
+						out[head*2+1] += clamp(coeff*y, -4, 4) * alpha
+					}
 					continue
 				}
 				d2 := float32(0)
 				for c := 0; c < components; c++ {
-					d := out[e.Head*components+c] - out[k*components+c]
+					d := out[head*components+c] - out[k*components+c]
 					d2 += d * d
 				}
 				if d2 > 0 {
 					coeff := 2 * repulsion * b / ((.001 + d2) * (a*float32(math.Pow(float64(d2), float64(b))) + 1))
 					for c := 0; c < components; c++ {
-						d := out[e.Head*components+c] - out[k*components+c]
-						out[e.Head*components+c] += clamp(coeff*d, -4, 4) * alpha
+						d := out[head*components+c] - out[k*components+c]
+						out[head*components+c] += clamp(coeff*d, -4, 4) * alpha
 					}
 				}
 			}
@@ -331,4 +362,38 @@ func clamp(x, lo, hi float32) float32 {
 		return hi
 	}
 	return x
+}
+
+// fastPowf evaluates x^p for the positive, normal float32 distances used by
+// the two-dimensional optimizer. Range reduction plus short float32
+// polynomials avoid the float64 math.Pow dispatch in the innermost loop while
+// retaining roughly float32 precision. Unusual values use the standard path.
+func fastPowf(x, p float32) float32 {
+	bits := math.Float32bits(x)
+	exponentBits := (bits >> 23) & 0xff
+	if exponentBits == 0 || exponentBits == 0xff {
+		return float32(math.Pow(float64(x), float64(p)))
+	}
+
+	const ln2 = float32(0.6931471805599453)
+	const invLn2 = float32(1.4426950408889634)
+	exponent := int(exponentBits) - 127
+	mantissa := math.Float32frombits((bits & 0x007fffff) | 0x3f800000)
+	z := (mantissa - 1) / (mantissa + 1)
+	z2 := z * z
+	logMantissa := 2 * z * (1 + z2*(1.0/3+z2*(1.0/5+z2*(1.0/7+z2/9))))
+	y := p * (float32(exponent)*ln2 + logMantissa)
+
+	q := y * invLn2
+	n := int(q)
+	if q < float32(n) {
+		n--
+	}
+	if n < -126 || n > 127 {
+		return float32(math.Exp(float64(y)))
+	}
+	r := y - float32(n)*ln2
+	expR := 1 + r*(1+r*(1.0/2+r*(1.0/6+r*(1.0/24+r*(1.0/120+r*(1.0/720+r/5040))))))
+	scale := math.Float32frombits(uint32(n+127) << 23)
+	return scale * expR
 }

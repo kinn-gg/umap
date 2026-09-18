@@ -27,6 +27,16 @@ func (r *RNG) Intn(n int) int {
 		}
 	}
 }
+
+// intnBounded is Intn with its rejection bound precomputed for a hot loop.
+func (r *RNG) intnBounded(bound, limit uint64) int {
+	for {
+		x := r.Uint64()
+		if x < limit {
+			return int(x % bound)
+		}
+	}
+}
 func (r *RNG) Shuffle(n int, swap func(i, j int)) {
 	for i := n - 1; i > 0; i-- {
 		swap(i, r.Intn(i+1))
