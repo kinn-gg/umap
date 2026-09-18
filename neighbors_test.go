@@ -54,9 +54,11 @@ func TestParallelNeighborSearchReproducible(t *testing.T) {
 
 func TestHotPathAllocationGate(t *testing.T) {
 	a, b := make([]float32, 128), make([]float32, 128)
-	metric := NewMetric(Euclidean)
-	if got := testing.AllocsPerRun(1000, func() { _ = metric.Distance(a, b) }); got != 0 {
-		t.Fatalf("metric hot path allocates %.2f objects/run", got)
+	for _, kind := range []MetricKind{Euclidean, SquaredEuclidean, Cosine} {
+		metric := NewMetric(kind)
+		if got := testing.AllocsPerRun(1000, func() { _ = metric.Distance(a, b) }); got != 0 {
+			t.Fatalf("metric %d hot path allocates %.2f objects/run", kind, got)
+		}
 	}
 }
 

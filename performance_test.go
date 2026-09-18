@@ -161,3 +161,56 @@ func TestSmoothKNNAllocationGate(t *testing.T) {
 		t.Fatalf("SmoothKNN allocations = %g, want at most the two result slices", got)
 	}
 }
+
+func BenchmarkDenseDistanceDimensions(b *testing.B) {
+	for _, dimensions := range []int{2, 16, 128, 512} {
+		a := make([]float32, dimensions)
+		bb := make([]float32, dimensions)
+		for i := range a {
+			a[i] = float32(math.Sin(float64(i) * .17))
+			bb[i] = float32(math.Cos(float64(i) * .11))
+		}
+		for _, kind := range []MetricKind{Euclidean, Cosine} {
+			metric := NewMetric(kind)
+			name := "euclidean"
+			if kind == Cosine {
+				name = "cosine"
+			}
+			b.Run(fmt.Sprintf("dimensions/%d/metric/%s", dimensions, name), func(b *testing.B) {
+				b.ReportAllocs()
+				for range b.N {
+					_ = metric.Distance(a, bb)
+				}
+			})
+		}
+	}
+}
+
+func BenchmarkDenseFitDimensions(b *testing.B) {
+	for _, dimensions := range []int{2, 16, 128, 512} {
+		data := make([]float32, 256*dimensions)
+		for i := range data {
+			data[i] = float32(math.Sin(float64(i)*.17) + math.Cos(float64(i)*.03))
+		}
+		x, err := NewDense(data, 256, dimensions)
+		if err != nil {
+			b.Fatal(err)
+		}
+		cfg := DefaultConfig()
+		cfg.Epochs, cfg.Init, cfg.Workers, cfg.Deterministic = 100, RandomInit, 1, true
+		seed := uint64(42)
+		cfg.Seed = &seed
+		b.Run(fmt.Sprintf("dimensions/%d", dimensions), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				u, err := New(cfg)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := u.Fit(context.Background(), x, NoTarget()); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
