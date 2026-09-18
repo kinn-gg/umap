@@ -58,6 +58,40 @@ the second run also exceeds the budget, the change must fail review unless its
 PR includes benchmark artifacts and an explicit baseline-update rationale.
 Budgets may never be relaxed merely to make a job pass.
 
+## Smooth-kNN calibration (#33)
+
+`SmoothKNN` finds the local-connectivity samples directly in each ordered
+distance row instead of copying all positive distances into a temporary slice.
+It also prepares the float64, rho-adjusted distances once per row for reuse by
+the binary search. Neighbor counts up to 65 use stack scratch; larger counts
+share one function-scoped fallback slice. Thus allocation count is independent
+of the number of rows.
+
+Use the focused benchmark below for distinct and duplicated-distance inputs at
+64, 256, and 1,024 rows:
+
+```sh
+go test -run '^$' -bench '^BenchmarkSmoothKNNCalibration$' -benchmem -count 5 .
+```
+
+On Linux/amd64, Go 1.27.1, i5-12600K, five-sample medians changed as follows:
+
+| Input | Baseline | Optimized | Change | Allocations |
+|---|---:|---:|---:|---:|
+| 256 distinct | 517 us | 473 us | -8.5% | 258 to 2 |
+| 256 duplicated | 472 us | 445 us | -5.7% | 258 to 2 |
+| 1,024 distinct | 2.051 ms | 1.890 ms | -7.9% | 1,026 to 2 |
+| 1,024 duplicated | 1.887 ms | 1.778 ms | -5.8% | 1,026 to 2 |
+
+The 15% runtime target is not reached consistently. After removing row
+allocation and repeated distance conversion, the remaining loop is primarily
+the required `math.Exp` evaluation for every neighbor and calibration step.
+Reducing their count or replacing each division with reciprocal multiplication
+changes floating-point evaluation and can change rho/sigma convergence. The
+optimization therefore retains the existing 64-iteration bound, tolerance,
+and arithmetic while eliminating more than 99% of allocations and reducing
+allocated bytes by 88.9%.
+
 ## Sparse cosine investigation (#29)
 
 The matched `synthetic/sparse-text` workload was dominated by exact neighbor

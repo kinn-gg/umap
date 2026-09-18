@@ -24,35 +24,54 @@ func SmoothKNN(n Neighbors, localConnectivity, bandwidth float32) (rho, sigma []
 		globalMean += float64(v)
 	}
 	globalMean /= float64(len(n.Distances))
+	globalFloor := 1e-3 * globalMean
+	lc := float64(localConnectivity)
+	idx := int(math.Floor(lc))
+	var adjustedStorage [64]float64
+	adjusted := adjustedStorage[:]
+	if n.K-1 > len(adjusted) {
+		adjusted = make([]float64, n.K-1)
+	}
+	adjusted = adjusted[:n.K-1]
 	for i := 0; i < n.Rows; i++ {
 		ds := n.Distances[i*n.K : (i+1)*n.K]
-		nonzero := make([]float32, 0, n.K)
+		localSum := 0.
+		positive, lower, upper, last := 0, float32(0), float32(0), float32(0)
 		for _, d := range ds {
-			if d > 0 {
-				nonzero = append(nonzero, d)
+			localSum += float64(d)
+			if d <= 0 {
+				continue
 			}
+			if positive == idx-1 {
+				lower = d
+			}
+			if positive == idx {
+				upper = d
+			}
+			last = d
+			positive++
 		}
-		lc := float64(localConnectivity)
-		idx := int(math.Floor(lc))
-		if len(nonzero) > 0 {
+		if positive > 0 {
 			if idx > 0 {
-				if idx <= len(nonzero) {
-					rho[i] = nonzero[idx-1]
+				if idx <= positive {
+					rho[i] = lower
 				} else {
-					rho[i] = nonzero[len(nonzero)-1]
+					rho[i] = last
 				}
 			}
-			if float64(idx) < lc && idx < len(nonzero) {
-				rho[i] += (float32(lc) - float32(idx)) * nonzero[idx]
+			if float64(idx) < lc && idx < positive {
+				rho[i] += (float32(lc) - float32(idx)) * upper
 			}
+		}
+		for q, d := range ds[1:] {
+			adjusted[q] = float64(d - rho[i])
 		}
 		lo, hi, mid := 0., math.Inf(1), 1.
 		for it := 0; it < 64; it++ {
 			sum := 0.
 			// nearest_neighbors includes the sample itself at position zero;
 			// umap-learn deliberately excludes it from the entropy sum.
-			for _, d := range ds[1:] {
-				v := float64(d - rho[i])
+			for _, v := range adjusted {
 				if v > 0 {
 					sum += math.Exp(-v / mid)
 				} else {
@@ -74,14 +93,9 @@ func SmoothKNN(n Neighbors, localConnectivity, bandwidth float32) (rho, sigma []
 				}
 			}
 		}
-		floor := 1e-3 * globalMean
+		floor := globalFloor
 		if rho[i] > 0 {
-			local := 0.
-			for _, v := range ds {
-				local += float64(v)
-			}
-			local /= float64(len(ds))
-			floor = 1e-3 * local
+			floor = 1e-3 * (localSum / float64(len(ds)))
 		}
 		if mid < floor {
 			mid = floor

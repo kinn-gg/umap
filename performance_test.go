@@ -119,3 +119,45 @@ func BenchmarkFitStages(b *testing.B) {
 		})
 	}
 }
+
+func smoothKNNBenchmarkNeighbors(rows int, duplicated bool) Neighbors {
+	const k = 15
+	distances := make([]float32, rows*k)
+	for i := 0; i < rows; i++ {
+		for q := 1; q < k; q++ {
+			d := q
+			if duplicated {
+				d = (q + 1) / 2
+			}
+			distances[i*k+q] = float32(d) + float32(i%7)*.01
+		}
+	}
+	return Neighbors{Rows: rows, K: k, Distances: distances}
+}
+
+// BenchmarkSmoothKNNCalibration isolates the calibration hot path at the
+// issue #33 sizes and includes tied nonzero distances.
+func BenchmarkSmoothKNNCalibration(b *testing.B) {
+	for _, rows := range []int{64, 256, 1024} {
+		for _, duplicated := range []bool{false, true} {
+			name := "distinct"
+			if duplicated {
+				name = "duplicated"
+			}
+			n := smoothKNNBenchmarkNeighbors(rows, duplicated)
+			b.Run(fmt.Sprintf("rows/%d/%s", rows, name), func(b *testing.B) {
+				b.ReportAllocs()
+				for range b.N {
+					SmoothKNN(n, 1, 1)
+				}
+			})
+		}
+	}
+}
+
+func TestSmoothKNNAllocationGate(t *testing.T) {
+	n := smoothKNNBenchmarkNeighbors(256, true)
+	if got := testing.AllocsPerRun(100, func() { SmoothKNN(n, 1, 1) }); got > 2 {
+		t.Fatalf("SmoothKNN allocations = %g, want at most the two result slices", got)
+	}
+}

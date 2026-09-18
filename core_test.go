@@ -118,6 +118,39 @@ func TestReferenceFixtureKNNAndSmooth(t *testing.T) {
 	}
 }
 
+func TestSmoothKNNDegenerateAndDuplicatedFixtures(t *testing.T) {
+	for _, name := range []string{"degenerate", "duplicated"} {
+		t.Run(name, func(t *testing.T) {
+			b, err := os.ReadFile("parity/fixtures/" + name + ".json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var f struct {
+				Input      struct{ Rows int }
+				Parameters struct {
+					Neighbors int     `json:"n_neighbors"`
+					Local     float32 `json:"local_connectivity"`
+				}
+				KNN struct {
+					Indices   []int
+					Distances []float32
+				}
+				Smooth struct{ Rho, Sigma []float32 } `json:"smooth_knn"`
+			}
+			if err := json.Unmarshal(b, &f); err != nil {
+				t.Fatal(err)
+			}
+			n := Neighbors{Rows: f.Input.Rows, K: f.Parameters.Neighbors, Indices: f.KNN.Indices, Distances: f.KNN.Distances}
+			rho, sigma := SmoothKNN(n, f.Parameters.Local, 1)
+			for i := range rho {
+				if math.Abs(float64(rho[i]-f.Smooth.Rho[i])) > 1e-5 || math.Abs(float64(sigma[i]-f.Smooth.Sigma[i])) > 2e-4 {
+					t.Fatalf("smooth mismatch at %d: got %g/%g want %g/%g", i, rho[i], sigma[i], f.Smooth.Rho[i], f.Smooth.Sigma[i])
+				}
+			}
+		})
+	}
+}
+
 func TestFitDeterministic(t *testing.T) {
 	x, _ := NewDense([]float32{0, 0, 0, 1, 1, 0, 1, 1}, 4, 2)
 	seed := uint64(9)
