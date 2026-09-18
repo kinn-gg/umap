@@ -13,6 +13,9 @@ type Config struct {
 	Seed                                                                 *uint64
 	Deterministic                                                        bool
 	Workers                                                              int
+	NeighborSearch                                                       NeighborSearchOptions
+	MemoryBudget                                                         int64
+	Progress                                                             ProgressFunc
 }
 
 func DefaultConfig() Config {
@@ -51,7 +54,7 @@ func NewContinuous(values []float32) (Continuous, error) {
 }
 
 func New(c Config) (*UMAP, error) {
-	if c.Neighbors < 2 || c.Components < 1 || c.LearningRate <= 0 || c.Spread <= 0 || c.MinDist < 0 || c.MinDist > c.Spread || c.SetOpMixRatio < 0 || c.SetOpMixRatio > 1 || c.LocalConnectivity < 0 || c.NegativeSampleRate < 0 {
+	if c.Neighbors < 2 || c.Components < 1 || c.LearningRate <= 0 || c.Spread <= 0 || c.MinDist < 0 || c.MinDist > c.Spread || c.SetOpMixRatio < 0 || c.SetOpMixRatio > 1 || c.LocalConnectivity < 0 || c.NegativeSampleRate < 0 || c.MemoryBudget < 0 {
 		return nil, validationf("invalid UMAP configuration")
 	}
 	if (c.A == 0) != (c.B == 0) {
@@ -99,7 +102,25 @@ func (u *UMAP) FitTransform(ctx context.Context, x Matrix, _ ...any) (*Model, *E
 	}
 	cfg := u.config
 	k := min(cfg.Neighbors, rows-1)
-	knn, err := ExactNeighbors(x, k, cfg.Metric)
+	seed := uint64(0)
+	if cfg.Seed != nil {
+		seed = *cfg.Seed
+	}
+	search := cfg.NeighborSearch
+	if cfg.MemoryBudget > 0 {
+		search.Exact.MemoryBudget = cfg.MemoryBudget
+		search.MemoryBudget = cfg.MemoryBudget
+	}
+	if search.Exact.Progress == nil {
+		search.Exact.Progress = cfg.Progress
+	}
+	if search.Approximate.Progress == nil {
+		search.Approximate.Progress = cfg.Progress
+	}
+	if cfg.Seed != nil {
+		search.Approximate.Seed = seed
+	}
+	knn, err := FindNeighbors(ctx, x, k, cfg.Metric, search)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -107,10 +128,6 @@ func (u *UMAP) FitTransform(ctx context.Context, x Matrix, _ ...any) (*Model, *E
 	graph := FuzzyGraph(knn, rho, sigma, cfg.SetOpMixRatio)
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
-	}
-	seed := uint64(0)
-	if cfg.Seed != nil {
-		seed = *cfg.Seed
 	}
 	var init []float32
 	if cfg.Init == RandomInit {
