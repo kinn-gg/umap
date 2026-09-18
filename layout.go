@@ -1,6 +1,9 @@
 package umap
 
-import "math"
+import (
+	"context"
+	"math"
+)
 
 type Init uint8
 
@@ -139,9 +142,14 @@ func FitAB(spread, minDist float64) (a, b float64) {
 }
 
 func OptimizeLayout(initial []float32, g Graph, components, epochs int, learningRate, a, b, repulsion float32, negativeRate int, seed uint64) []float32 {
+	out, _ := optimizeLayoutContext(context.Background(), initial, g, components, epochs, learningRate, a, b, repulsion, negativeRate, seed)
+	return out
+}
+
+func optimizeLayoutContext(ctx context.Context, initial []float32, g Graph, components, epochs int, learningRate, a, b, repulsion float32, negativeRate int, seed uint64) ([]float32, error) {
 	out := append([]float32(nil), initial...)
 	if epochs <= 0 || len(g.Edges) == 0 {
-		return out
+		return out, ctx.Err()
 	}
 	rng := NewRNG(DeriveSeed(seed, "layout"))
 	maxWeight := float32(0)
@@ -161,6 +169,9 @@ func OptimizeLayout(initial []float32, g Graph, components, epochs int, learning
 		}
 	}
 	for epoch := 0; epoch < epochs; epoch++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		alpha := learningRate * (1 - float32(epoch)/float32(epochs))
 		for ei, e := range g.Edges {
 			if nextSample[ei] > float32(epoch) {
@@ -208,7 +219,7 @@ func OptimizeLayout(initial []float32, g Graph, components, epochs int, learning
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 func clamp(x, lo, hi float32) float32 {
 	if x < lo {
