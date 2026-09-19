@@ -54,9 +54,10 @@ The `curve-fit/cold` and `curve-fit/cached` stages keep both costs visible.
 
 ### Layout optimization profile
 
-`BenchmarkLayoutOptimization` isolates the 100-epoch, two-component layout
-cases from issue #35. On an Intel i5-12600K with Go 1.27.1, three-run medians
-were:
+`BenchmarkLayoutOptimization` isolates the 100-epoch layout cases from issues
+#35 and #45, including two- and eight-component embeddings at 15 and 50
+neighbors. On an Intel i5-12600K with Go 1.27.1, three-run medians for the
+original two-component work were:
 
 | Rows | Neighbors | Before | After | Change |
 |---:|---:|---:|---:|---:|
@@ -76,14 +77,32 @@ attributed 59.6% of samples directly to `math.archExp`, `math.archLog`, and
 less than 1%, making the remaining cost explicit rather than hiding it behind
 `math.Pow` dispatch and duplicate exponentiation.
 
-The optimized two-component loop computes each distance power once using
-float32 range reduction and bounded polynomials; `TestFastPowfAccuracy` caps
-relative error at 2e-5 over the exercised exponent range. The general
-component and density paths retain the standard-library calculation. A
-pre-filtered edge schedule was also measured, but rejected: it improved the
+The optimized layout loops compute each distance power once using float32
+range reduction and bounded polynomials; `TestFastPowfAccuracy` caps relative
+error at 2e-5 over the exercised exponent range. A pre-filtered edge schedule
+was also measured, but rejected: it improved the
 256-row/50-neighbor case by only about 4% while increasing allocated bytes by
 roughly 2.6x. Keeping the existing edge scan preserves its compact allocation
 budget and deterministic update order.
+
+For issue #45, a CPU profile of the eight-component, 256-row/50-neighbor case
+showed standard `math.Pow` consuming 60.5% of samples cumulatively in the
+negative-sampling path even after attractive updates used `fastPowf`. Applying
+the same single-power formulation to both general-component updates removes
+the float64 exponentiation without changing update or RNG order. Five-run
+medians were:
+
+| Rows | Neighbors | Components | Before | After | Change |
+|---:|---:|---:|---:|---:|---:|
+| 256 | 15 | 8 | 61.12 ms | 44.49 ms | -27.2% |
+| 256 | 50 | 8 | 90.54 ms | 66.49 ms | -26.6% |
+
+Both cases remain at five allocations per call, with allocated bytes unchanged
+at 57,360 and 180,240 respectively. In the optimized 50-neighbor profile,
+`fastPowf` accounts for 62.7% cumulatively and standard transcendental power
+functions disappear from the sampled layout path. The density path benefits
+from the same calculation when enabled; its existing per-epoch radii work is
+otherwise unchanged.
 
 Reproduce the layout measurements and profile with:
 
