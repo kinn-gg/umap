@@ -1,7 +1,9 @@
 package umap
 
 import (
+	"cmp"
 	"math"
+	"slices"
 	"sort"
 )
 
@@ -133,31 +135,66 @@ func FuzzyGraph(n Neighbors, rho, sigma []float32, mix float32) Graph {
 	sort.Slice(directed, func(i, j int) bool {
 		return directed[i].Head < directed[j].Head || (directed[i].Head == directed[j].Head && directed[i].Tail < directed[j].Tail)
 	})
+	rowOffsets := make([]int, n.Rows+1)
+	for _, e := range directed {
+		rowOffsets[e.Head+1]++
+	}
+	for i := range n.Rows {
+		rowOffsets[i+1] += rowOffsets[i]
+	}
 	weight := func(a, b int) float32 {
-		i := sort.Search(len(directed), func(i int) bool { return directed[i].Head > a || (directed[i].Head == a && directed[i].Tail >= b) })
-		if i < len(directed) && directed[i].Head == a && directed[i].Tail == b {
+		start, end := rowOffsets[a], rowOffsets[a+1]
+		i := start + sort.Search(end-start, func(i int) bool { return directed[start+i].Tail >= b })
+		if i < end && directed[i].Tail == b {
 			return directed[i].Weight
 		}
 		return 0
 	}
 	edges := make([]Edge, 0, 2*len(directed))
+	previousHead, previousTail, forward := -1, -1, float32(0)
 	for _, e := range directed {
 		a, b := e.Head, e.Tail
+		if a != previousHead || b != previousTail {
+			previousHead, previousTail, forward = a, b, e.Weight
+		}
+		reverse := weight(b, a)
 		if a > b {
-			if weight(b, a) > 0 {
+			if reverse > 0 {
 				continue
 			}
 			a, b = b, a
 		}
-		x, y := weight(a, b), weight(b, a)
-		prod := x * y
-		w := mix*(x+y-prod) + (1-mix)*prod
+		prod := forward * reverse
+		w := mix*(forward+reverse-prod) + (1-mix)*prod
 		if w > 0 {
 			edges = append(edges, Edge{a, b, w}, Edge{b, a, w})
 		}
 	}
-	sort.Slice(edges, func(i, j int) bool {
-		return edges[i].Head < edges[j].Head || (edges[i].Head == edges[j].Head && edges[i].Tail < edges[j].Tail)
-	})
+	// Bucket by head in linear time, then sort only the small per-row spans by
+	// tail. Reuse rowOffsets now that reverse membership lookups are complete.
+	clear(rowOffsets)
+	for _, e := range edges {
+		rowOffsets[e.Head+1]++
+	}
+	for i := range n.Rows {
+		rowOffsets[i+1] += rowOffsets[i]
+	}
+	next := append([]int(nil), rowOffsets[:n.Rows]...)
+	for head := range n.Rows {
+		for next[head] < rowOffsets[head+1] {
+			i := next[head]
+			owner := edges[i].Head
+			if owner == head {
+				next[head]++
+				continue
+			}
+			edges[i], edges[next[owner]] = edges[next[owner]], edges[i]
+			next[owner]++
+		}
+	}
+	for head := range n.Rows {
+		row := edges[rowOffsets[head]:rowOffsets[head+1]]
+		slices.SortFunc(row, func(a, b Edge) int { return cmp.Compare(a.Tail, b.Tail) })
+	}
 	return Graph{n.Rows, edges}
 }

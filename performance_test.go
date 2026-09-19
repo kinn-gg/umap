@@ -82,6 +82,23 @@ func BenchmarkLayoutOptimization(b *testing.B) {
 	}
 }
 
+// BenchmarkFuzzyGraph covers the row and neighbor-count matrix from issue #37.
+// Fixture construction is excluded so the benchmark isolates graph building.
+func BenchmarkFuzzyGraph(b *testing.B) {
+	for _, rows := range []int{64, 256, 1024} {
+		for _, k := range []int{15, 50} {
+			fixture := newLayoutBenchmarkFixture(b, rows, k)
+			name := fmt.Sprintf("rows/%d/neighbors/%d", rows, k)
+			b.Run(name, func(b *testing.B) {
+				b.ReportAllocs()
+				for range b.N {
+					FuzzyGraph(fixture.neighbors, fixture.rho, fixture.sigma, 1)
+				}
+			})
+		}
+	}
+}
+
 // BenchmarkFitStages makes the fixed costs of the small-input fit path visible.
 // Keep the row counts and fit parameters aligned with benchmarks/README.md and
 // cmd/umap-benchmark so profiles and matched Go/Python results are comparable.
