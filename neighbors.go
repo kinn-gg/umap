@@ -115,11 +115,11 @@ func ExactNeighborsWithOptions(ctx context.Context, x Matrix, k int, metric Metr
 		block = n
 	}
 	out := newNeighborHeap(n, k)
-	if csr, ok := x.(CSR); ok && metric.Kind == Cosine && opts.MemoryBudget == 0 && boundedWorkers(opts.Workers, n) == 1 {
+	workers := exactWorkers(x, metric, opts.Workers)
+	if csr, ok := x.(CSR); ok && metric.Kind == Cosine && opts.MemoryBudget == 0 && workers == 1 {
 		return exactSparseCosineNeighbors(ctx, csr, out, block, opts.Progress)
 	}
 	distance := newMatrixDistanceEvaluator(metric, x)
-	workers := boundedWorkers(opts.Workers, n)
 	if opts.MemoryBudget > 0 {
 		workers = min(workers, max(1, int(opts.MemoryBudget/max(1, int64(block)*8))))
 	}
@@ -343,6 +343,32 @@ func boundedWorkers(requested, jobs int) int {
 	return min(requested, max(1, jobs))
 }
 
+// exactWorkers keeps automatic searches serial until there is enough distance
+// work to amortize goroutine startup and the parallel path's full-matrix scan.
+// Explicit worker counts remain exact (apart from the row-count bound).
+func exactWorkers(x Matrix, metric Metric, requested int) int {
+	rows, dimensions := x.Shape()
+	if requested != 0 {
+		return boundedWorkers(requested, rows)
+	}
+	workers := boundedWorkers(0, rows)
+	if workers < 3 {
+		return 1
+	}
+	// Sparse cosine's inverted-index implementation is both sub-quadratic on
+	// typical sparse inputs and currently single-worker. Prefer it over the
+	// generic parallel full scan.
+	if _, ok := x.(CSR); ok && metric.Kind == Cosine {
+		return 1
+	}
+	const minimumParallelWork = int64(2_000_000)
+	work := int64(rows) * int64(rows) * int64(max(1, dimensions))
+	if work < minimumParallelWork {
+		return 1
+	}
+	return workers
+}
+
 func parallelRows(ctx context.Context, rows, workers int, fn func(int)) error {
 	if workers <= 1 {
 		for i := 0; i < rows; i++ {
@@ -353,15 +379,15 @@ func parallelRows(ctx context.Context, rows, workers int, fn func(int)) error {
 		}
 		return nil
 	}
-	var next atomic.Int64
 	var wg sync.WaitGroup
 	wg.Add(workers)
-	for range workers {
+	for worker := range workers {
 		go func() {
 			defer wg.Done()
-			for {
-				i := int(next.Add(1) - 1)
-				if i >= rows || ctx.Err() != nil {
+			start := worker * rows / workers
+			end := (worker + 1) * rows / workers
+			for i := start; i < end; i++ {
+				if ctx.Err() != nil {
 					return
 				}
 				fn(i)
