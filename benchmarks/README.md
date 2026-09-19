@@ -279,3 +279,47 @@ The canonical input SHA-256 values are:
 The JSONL files retain every measured sample, mean, standard deviation,
 allocation probe, and peak-RSS observation. `umap-comparison.json` is the
 validated, machine-readable summary.
+
+## 10k-100k scaling suite
+
+The local-only scaling suite exercises dense 64-dimensional Euclidean and
+sparse 4,096-dimensional cosine inputs at 10,000, 50,000, and 100,000 rows.
+Every case uses 15 neighbors, two output components, 100 layout epochs, seed
+42, and the explicitly selected NN-descent backend with a 256-candidate pool,
+20 maximum iterations, and 0.0001 convergence delta. Sparse rows contain 16
+sorted nonzeros (density 0.00390625). Run all six cases with:
+
+```sh
+make bench-scaling
+```
+
+The command intentionally has no routine CI target. It performs one warmup and
+three measured fits by default, and runs each workload in a fresh child process
+so its peak RSS is independent of earlier cases. Linux and macOS report the
+process high-water RSS; other platforms emit `null` and the metadata identifies
+that resource limit. Use `--case dense/10000` (or another exact case name) for
+a focused run. `--workers`, `--warmups`, `--repeats`, `--epochs`, and
+`--recall-queries` make resource use explicit; at least two repeats are
+required.
+
+The JSONL begins with a metadata record containing the suite version, runtime,
+OS, architecture, CPU, logical CPU count, module/VCS versions, seed, warmup and
+repeat counts, effective workers, epochs, recall sample size, RSS support, and
+budget policy. Each case then records all effective parameters, selected
+backend, canonical input SHA-256, every warmup and measured end-to-end,
+neighbor-search, and layout duration, an isolated allocation probe, retained
+Go heap, peak RSS, and quality results.
+
+Recall@15 is measured against exhaustive full-corpus neighbors for evenly
+spaced, fixed query rows (32 by default), rather than against a smaller corpus.
+NN-descent is run twice with seed 42 and its complete indices and distances
+must match for `seeded_reproducible` to be true. This quality probe is outside
+the timed fit samples.
+
+Initial per-machine regression limits are derived independently for total,
+neighbor-search, and layout time from the repeated measurements. The limit is
+the median plus the larger of six median absolute deviations or 25% of the
+median. Never compare runs unless the input checksum, suite version, runtime,
+architecture, worker count, epochs, warmup count, seed, and parameters match.
+Treat the generated limits as a baseline for that host, not as portable
+performance claims; preserve the baseline JSONL with any regression report.

@@ -178,6 +178,32 @@ func TestFitDeterministic(t *testing.T) {
 	}
 }
 
+func TestFitReportsStageTimings(t *testing.T) {
+	x, _ := NewDense([]float32{0, 0, 0, 1, 1, 0, 1, 1}, 4, 2)
+	seed := uint64(9)
+	c := DefaultConfig()
+	c.Neighbors, c.Epochs, c.Init, c.Seed = 3, 4, RandomInit, &seed
+	seen := map[FitStage]int{}
+	c.StageTiming = func(timing StageTiming) {
+		if timing.Elapsed < 0 {
+			t.Errorf("negative %s timing", timing.Stage)
+		}
+		seen[timing.Stage]++
+	}
+	u, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.Fit(context.Background(), x, NoTarget()); err != nil {
+		t.Fatal(err)
+	}
+	for _, stage := range []FitStage{FitStageNeighborSearch, FitStageLayout} {
+		if seen[stage] != 1 {
+			t.Errorf("%s reported %d times, want 1", stage, seen[stage])
+		}
+	}
+}
+
 func BenchmarkEuclidean(b *testing.B) {
 	x := make([]float32, 128)
 	y := make([]float32, 128)
