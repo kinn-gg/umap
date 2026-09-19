@@ -57,24 +57,28 @@ func newLayoutBenchmarkFixture(tb testing.TB, rows, k int) fitStageFixture {
 	return fitStageFixture{x, neighbors, rho, sigma, graph, RandomEmbedding(rows, 2, 42)}
 }
 
-// BenchmarkLayoutOptimization isolates the issue #35 hot path at the matched
-// end-to-end sizes. Keep these parameters aligned with benchmarks/README.md.
+// BenchmarkLayoutOptimization isolates the layout hot path at the matched
+// end-to-end sizes, including the high-neighbor and multi-component cases from
+// issue #45. Keep these parameters aligned with benchmarks/README.md.
 func BenchmarkLayoutOptimization(b *testing.B) {
 	a, bb := FitAB(1, .1)
 	for _, tc := range []struct {
-		rows, neighbors int
+		rows, neighbors, components int
 	}{
-		{64, 15},
-		{256, 15},
-		{256, 50},
-		{1024, 15},
+		{64, 15, 2},
+		{256, 15, 2},
+		{256, 50, 2},
+		{256, 15, 8},
+		{256, 50, 8},
+		{1024, 15, 2},
 	} {
 		fixture := newLayoutBenchmarkFixture(b, tc.rows, tc.neighbors)
-		name := fmt.Sprintf("rows/%d/neighbors/%d", tc.rows, tc.neighbors)
+		initial := RandomEmbedding(tc.rows, tc.components, 42)
+		name := fmt.Sprintf("rows/%d/neighbors/%d/components/%d", tc.rows, tc.neighbors, tc.components)
 		b.Run(name, func(b *testing.B) {
 			b.ReportAllocs()
 			for range b.N {
-				if _, err := optimizeLayoutContext(context.Background(), fixture.initial, fixture.graph, 2, 100, 1, float32(a), float32(bb), 1, 5, 42); err != nil {
+				if _, err := optimizeLayoutContext(context.Background(), initial, fixture.graph, tc.components, 100, 1, float32(a), float32(bb), 1, 5, 42); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -361,27 +365,30 @@ func BenchmarkDenseFitDimensions(b *testing.B) {
 func TestLayoutOptimizationDeterministicAndCancellable(t *testing.T) {
 	fixture := newLayoutBenchmarkFixture(t, 64, 15)
 	a, b := FitAB(1, .1)
-	run := func(ctx context.Context) ([]float32, error) {
-		return optimizeLayoutContext(ctx, fixture.initial, fixture.graph, 2, 20, 1, float32(a), float32(b), 1, 5, 42)
-	}
-	want, err := run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range want {
-		if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
-			t.Fatalf("layout differs at component %d: got %g, want %g", i, got[i], want[i])
+	for _, components := range []int{2, 8} {
+		initial := RandomEmbedding(fixture.graph.Vertices, components, 42)
+		run := func(ctx context.Context) ([]float32, error) {
+			return optimizeLayoutContext(ctx, initial, fixture.graph, components, 20, 1, float32(a), float32(b), 1, 5, 42)
 		}
-	}
+		want, err := run(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := run(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range want {
+			if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
+				t.Fatalf("%d-component layout differs at coordinate %d: got %g, want %g", components, i, got[i], want[i])
+			}
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := run(ctx); err != context.Canceled {
-		t.Fatalf("cancellation error = %v, want %v", err, context.Canceled)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := run(ctx); err != context.Canceled {
+			t.Fatalf("cancellation error = %v, want %v", err, context.Canceled)
+		}
 	}
 }
 

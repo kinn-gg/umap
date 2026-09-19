@@ -238,7 +238,8 @@ func optimizeLayoutDensityContext(ctx context.Context, initial []float32, g Grap
 					dist2 += d * d
 				}
 				if dist2 > 0 {
-					gradCoeff := -2 * a * b * float32(math.Pow(float64(dist2), float64(b-1))) / (a*float32(math.Pow(float64(dist2), float64(b))) + 1)
+					distPow := fastPowf(dist2, b)
+					gradCoeff := -2 * a * b * (distPow / dist2) / (a*distPow + 1)
 					// The density term pulls an edge together when its endpoints are
 					// locally too diffuse and pushes it apart when too concentrated.
 					if densityError != nil {
@@ -280,7 +281,8 @@ func optimizeLayoutDensityContext(ctx context.Context, initial []float32, g Grap
 					d2 += d * d
 				}
 				if d2 > 0 {
-					coeff := 2 * repulsion * b / ((.001 + d2) * (a*float32(math.Pow(float64(d2), float64(b))) + 1))
+					distPow := fastPowf(d2, b)
+					coeff := 2 * repulsion * b / ((.001 + d2) * (a*distPow + 1))
 					for c := 0; c < components; c++ {
 						d := out[head*components+c] - out[k*components+c]
 						out[head*components+c] += clamp(coeff*d, -4, 4) * alpha
@@ -365,7 +367,7 @@ func clamp(x, lo, hi float32) float32 {
 }
 
 // fastPowf evaluates x^p for the positive, normal float32 distances used by
-// the two-dimensional optimizer. Range reduction plus short float32
+// the layout optimizer. Range reduction plus short float32
 // polynomials avoid the float64 math.Pow dispatch in the innermost loop while
 // retaining roughly float32 precision. Unusual values use the standard path.
 func fastPowf(x, p float32) float32 {
