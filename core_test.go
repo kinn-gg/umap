@@ -178,6 +178,32 @@ func TestFitDeterministic(t *testing.T) {
 	}
 }
 
+func TestFitReportsStageTimings(t *testing.T) {
+	x, _ := NewDense([]float32{0, 0, 0, 1, 1, 0, 1, 1}, 4, 2)
+	seed := uint64(9)
+	c := DefaultConfig()
+	c.Neighbors, c.Epochs, c.Init, c.Seed = 3, 4, RandomInit, &seed
+	seen := map[FitStage]int{}
+	c.StageTiming = func(timing StageTiming) {
+		if timing.Elapsed < 0 {
+			t.Errorf("negative %s timing", timing.Stage)
+		}
+		seen[timing.Stage]++
+	}
+	u, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.Fit(context.Background(), x, NoTarget()); err != nil {
+		t.Fatal(err)
+	}
+	for _, stage := range []FitStage{FitStageNeighborSearch, FitStageLayout} {
+		if seen[stage] != 1 {
+			t.Errorf("%s reported %d times, want 1", stage, seen[stage])
+		}
+	}
+}
+
 func BenchmarkEuclidean(b *testing.B) {
 	x := make([]float32, 128)
 	y := make([]float32, 128)
@@ -201,6 +227,35 @@ func TestFastPowfAccuracy(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestLayoutClampSpecialization(t *testing.T) {
+	tests := []struct {
+		name string
+		in   float32
+		want float32
+	}{
+		{"negative overflow", -5, -4},
+		{"negative boundary", -4, -4},
+		{"negative zero", float32(math.Copysign(0, -1)), float32(math.Copysign(0, -1))},
+		{"positive zero", 0, 0},
+		{"positive boundary", 4, 4},
+		{"positive overflow", 5, 4},
+		{"negative infinity", float32(math.Inf(-1)), -4},
+		{"positive infinity", float32(math.Inf(1)), 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := clamp(tt.in, -4, 4)
+			if math.Float32bits(got) != math.Float32bits(tt.want) {
+				t.Fatalf("clamp(%v, -4, 4) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+	nan := float32(math.NaN())
+	if got := clamp(nan, -4, 4); !math.IsNaN(float64(got)) {
+		t.Fatalf("clamp(NaN, -4, 4) = %v, want NaN", got)
 	}
 }
 

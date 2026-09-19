@@ -88,10 +88,37 @@ initialization, and worker count. It writes `go-umap-bench.jsonl`,
 `python-umap-bench.jsonl`, and `umap-comparison.json`; these generated files are
 ignored by Git.
 
+## 10k–100k scaling suite
+
+The local-only scaling suite exercises dense 64-dimensional Euclidean and
+sparse 4,096-dimensional cosine inputs at 10,000, 50,000, and 100,000 rows.
+Every case uses NN-descent with explicit parameters and runs in a fresh child
+process so peak RSS is independent of earlier cases. Run all six cases with:
+
+```sh
+make bench-scaling
+```
+
+Use `--case dense/10000` or another exact case name for a focused run.
+`--workers`, `--warmups`, `--repeats`, `--epochs`, and `--recall-queries`
+control resource use; at least two repeats are required.
+
+The output begins with suite and environment metadata, followed by each case's
+effective parameters, backend, input checksum, timings, allocations, retained
+heap, peak RSS, and quality results. Recall@15 is checked against exhaustive
+full-corpus neighbors for fixed query rows. A second seed-42 NN-descent run
+must reproduce its complete indices and distances.
+
 ## Regression policy
 
-Compare only results with matching inputs, architecture, tool versions, and
-warmup policy. A median runtime or peak-RSS increase above 10%, or any nonzero
-allocation in a metric inner loop, is a regression. Rerun once to exclude
-transient noise. If the second run still exceeds the budget, include the
-benchmark artifacts and an explicit rationale in the pull request.
+Compare only results with matching inputs, suite version, architecture, tool
+versions, worker count, parameters, and warmup policy. A median runtime or
+peak-RSS increase above 10%, or any nonzero allocation in a metric inner loop,
+is a regression. Rerun once to exclude transient noise. If the second run still
+exceeds the budget, include the benchmark artifacts and an explicit rationale
+in the pull request.
+
+The scaling suite also derives per-machine limits independently for total,
+neighbor-search, and layout time from repeated measurements. Treat those limits
+as a baseline for that host, not as portable performance claims, and preserve
+the baseline JSONL with any regression report.

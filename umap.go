@@ -5,7 +5,23 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"math"
+	"time"
 )
+
+// FitStage identifies an observable stage of an end-to-end fit.
+type FitStage string
+
+const (
+	FitStageNeighborSearch FitStage = "neighbor_search"
+	FitStageLayout         FitStage = "layout"
+)
+
+// StageTiming reports elapsed wall time for a completed fit stage. The hook is
+// intended for observability and benchmarking; it is called synchronously.
+type StageTiming struct {
+	Stage   FitStage
+	Elapsed time.Duration
+}
 
 type Config struct {
 	Neighbors, Components, Epochs                                        int
@@ -21,6 +37,7 @@ type Config struct {
 	NeighborSearch                                                       NeighborSearchOptions
 	MemoryBudget                                                         int64
 	Progress                                                             ProgressFunc
+	StageTiming                                                          func(StageTiming)
 	TransformSeed                                                        uint64
 	Target                                                               TargetConfig
 	Density                                                              DensityConfig
@@ -191,9 +208,13 @@ func (u *UMAP) FitTransform(ctx context.Context, x Matrix, y Target) (*Model, *E
 	}
 	search.Exact.Workers = cfg.Workers
 	search.Approximate.Workers = cfg.Workers
+	stageStart := time.Now()
 	knn, err := FindNeighbors(ctx, x, k, cfg.Metric, search)
 	if err != nil {
 		return nil, nil, err
+	}
+	if cfg.StageTiming != nil {
+		cfg.StageTiming(StageTiming{Stage: FitStageNeighborSearch, Elapsed: time.Since(stageStart)})
 	}
 	rho, sigma := SmoothKNN(knn, cfg.LocalConnectivity, 1)
 	graph := FuzzyGraph(knn, rho, sigma, cfg.SetOpMixRatio)
@@ -226,9 +247,13 @@ func (u *UMAP) FitTransform(ctx context.Context, x Matrix, y Target) (*Model, *E
 	if cfg.Density.Enabled || cfg.Density.Output {
 		originalRadii = graphRadiiMatrix(graph, x, cfg.Metric)
 	}
+	stageStart = time.Now()
 	data, err := optimizeLayoutDensityContext(ctx, init, graph, cfg.Components, epochs, cfg.LearningRate, a, b, cfg.RepulsionStrength, cfg.NegativeSampleRate, seed, originalRadii, cfg.Density)
 	if err != nil {
 		return nil, nil, err
+	}
+	if cfg.StageTiming != nil {
+		cfg.StageTiming(StageTiming{Stage: FitStageLayout, Elapsed: time.Since(stageStart)})
 	}
 	e := &Embedding{data, rows, cfg.Components}
 	training, err := cloneMatrix(x)
