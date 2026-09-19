@@ -66,7 +66,12 @@ func TestExactWorkerSelection(t *testing.T) {
 	if got := exactWorkers(sparse, NewMetric(Cosine), 0); runtime.GOMAXPROCS(0) >= 3 && got == 1 {
 		t.Fatalf("empty sparse cosine automatic worker count = %d, want parallel", got)
 	}
-	if got, want := exactWorkers(smallSparse, NewMetric(Cosine), 0), min(runtime.GOMAXPROCS(0), 8); got != want {
+	smallSparseWorkers := min(runtime.GOMAXPROCS(0), 128)
+	wantSmallSparse := 1
+	if smallSparseWorkers >= 3 && !preferSparseCosineIndex(smallSparse, smallSparseWorkers) {
+		wantSmallSparse = min(smallSparseWorkers, 8)
+	}
+	if got, want := exactWorkers(smallSparse, NewMetric(Cosine), 0), wantSmallSparse; got != want {
 		t.Fatalf("small sparse cosine automatic worker count = %d, want %d", got, want)
 	}
 	if got := exactWorkers(small, NewMetric(Euclidean), 4); got != 4 {
