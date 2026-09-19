@@ -209,6 +209,7 @@ func optimizeLayoutDensityContext(ctx context.Context, initial []float32, g Grap
 		return out, ctx.Err()
 	}
 	rng := NewRNG(DeriveSeed(seed, "layout"))
+	pow := newFastPowfEvaluator(b)
 	rngBound := uint64(g.Vertices)
 	rngLimit := ^uint64(0) - (^uint64(0) % rngBound)
 	maxWeight := float32(0)
@@ -247,7 +248,7 @@ func optimizeLayoutDensityContext(ctx context.Context, initial []float32, g Grap
 				y := out[head*2+1] - out[tail*2+1]
 				dist2 := x*x + y*y
 				if dist2 > 0 {
-					distPow := fastPowf(dist2, b)
+					distPow := pow.eval(dist2)
 					gradCoeff := -2 * a * b * (distPow / dist2) / (a*distPow + 1)
 					gradX := clamp(gradCoeff*x, -4, 4) * alpha
 					gradY := clamp(gradCoeff*y, -4, 4) * alpha
@@ -263,7 +264,7 @@ func optimizeLayoutDensityContext(ctx context.Context, initial []float32, g Grap
 					dist2 += d * d
 				}
 				if dist2 > 0 {
-					distPow := fastPowf(dist2, b)
+					distPow := pow.eval(dist2)
 					gradCoeff := -2 * a * b * (distPow / dist2) / (a*distPow + 1)
 					// The density term pulls an edge together when its endpoints are
 					// locally too diffuse and pushes it apart when too concentrated.
@@ -293,7 +294,7 @@ func optimizeLayoutDensityContext(ctx context.Context, initial []float32, g Grap
 					y := out[head*2+1] - out[k*2+1]
 					d2 := x*x + y*y
 					if d2 > 0 {
-						distPow := fastPowf(d2, b)
+						distPow := pow.eval(d2)
 						coeff := 2 * repulsion * b / ((.001 + d2) * (a*distPow + 1))
 						out[head*2] += clamp(coeff*x, -4, 4) * alpha
 						out[head*2+1] += clamp(coeff*y, -4, 4) * alpha
@@ -306,7 +307,7 @@ func optimizeLayoutDensityContext(ctx context.Context, initial []float32, g Grap
 					d2 += d * d
 				}
 				if d2 > 0 {
-					distPow := fastPowf(d2, b)
+					distPow := pow.eval(d2)
 					coeff := 2 * repulsion * b / ((.001 + d2) * (a*distPow + 1))
 					for c := 0; c < components; c++ {
 						d := out[head*components+c] - out[k*components+c]
@@ -394,46 +395,41 @@ func clamp(x, lo, hi float32) float32 {
 const powTableBits = 8
 const powTableSize = 1 << powTableBits
 
-var powLog2Table, powExp2Table = func() ([powTableSize + 1]float32, [powTableSize + 1]float32) {
-	var logs, exps [powTableSize + 1]float32
-	for i := range powTableSize + 1 {
-		x := float64(i) / powTableSize
-		logs[i] = float32(math.Log2(1 + x))
-		exps[i] = float32(math.Exp2(x))
-	}
-	return logs, exps
-}()
+// fastPowfEvaluator specializes x^p for one layout run. Splitting x into its
+// binary exponent and mantissa turns the hot operation into one interpolation
+// and one multiply; initialization is amortized over all sampled updates.
+type fastPowfEvaluator struct {
+	mantissa [powTableSize + 1]float32
+	exponent [254]float32
+	p        float32
+}
 
-// fastPowf evaluates x^p for the positive, normal float32 distances used by
-// the layout optimizer. Linearly interpolated log2/exp2 tables avoid division
-// and long polynomials in this dominant inner-loop operation while retaining
-// roughly float32 precision. Unusual values use the standard path.
-func fastPowf(x, p float32) float32 {
+func newFastPowfEvaluator(p float32) fastPowfEvaluator {
+	var evaluator fastPowfEvaluator
+	evaluator.p = p
+	for i := range evaluator.mantissa {
+		evaluator.mantissa[i] = float32(math.Pow(1+float64(i)/powTableSize, float64(p)))
+	}
+	for i := range evaluator.exponent {
+		evaluator.exponent[i] = float32(math.Exp2(float64((i - 126)) * float64(p)))
+	}
+	return evaluator
+}
+
+func (e *fastPowfEvaluator) eval(x float32) float32 {
 	bits := math.Float32bits(x)
 	exponentBits := (bits >> 23) & 0xff
 	if exponentBits == 0 || exponentBits == 0xff {
-		return float32(math.Pow(float64(x), float64(p)))
+		return float32(math.Pow(float64(x), float64(e.p)))
 	}
-
+	scale := e.exponent[exponentBits-1]
+	scaleExponent := (math.Float32bits(scale) >> 23) & 0xff
+	if scaleExponent == 0 || scaleExponent == 0xff {
+		return float32(math.Pow(float64(x), float64(e.p)))
+	}
 	mantissaBits := bits & 0x007fffff
 	index := mantissaBits >> (23 - powTableBits)
 	fraction := float32(mantissaBits&((1<<(23-powTableBits))-1)) * (1.0 / (1 << (23 - powTableBits)))
-	logLo := powLog2Table[index]
-	log2x := float32(int(exponentBits)-127) + logLo + fraction*(powLog2Table[index+1]-logLo)
-	y := p * log2x
-
-	n := int(y)
-	if y < float32(n) {
-		n--
-	}
-	if n < -126 || n > 127 {
-		return float32(math.Exp2(float64(y)))
-	}
-	fractional := (y - float32(n)) * powTableSize
-	expIndex := min(int(fractional), powTableSize-1)
-	expFraction := fractional - float32(expIndex)
-	expLo := powExp2Table[expIndex]
-	expR := expLo + expFraction*(powExp2Table[expIndex+1]-expLo)
-	scale := math.Float32frombits(uint32(n+127) << 23)
-	return scale * expR
+	lo := e.mantissa[index]
+	return scale * (lo + fraction*(e.mantissa[index+1]-lo))
 }

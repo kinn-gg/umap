@@ -88,6 +88,29 @@ was also measured, but rejected: it improved the
 roughly 2.6x. Keeping the existing edge scan preserves its compact allocation
 budget and deterministic update order.
 
+Issue #52 specializes the power evaluator for the fixed exponent used by each
+layout call. A 257-entry mantissa table and 254-entry exponent table are built
+once on the stack, so every sampled update needs only one linear interpolation
+and one multiplication instead of separate interpolated log2 and exp2 passes.
+Unusual and out-of-range float32 values retain the standard-library fallback.
+On the same i5-12600K, local three-run medians with Go 1.27.1 were:
+
+| Rows | Neighbors | Components | Before | After | Change |
+|---:|---:|---:|---:|---:|---:|
+| 64 | 15 | 2 | 6.58 ms | 3.65 ms | -44.5% |
+| 256 | 15 | 2 | 26.35 ms | 14.68 ms | -44.3% |
+| 256 | 50 | 2 | 39.24 ms | 22.23 ms | -43.3% |
+| 256 | 15 | 8 | 29.63 ms | 19.22 ms | -35.1% |
+| 256 | 50 | 8 | 45.01 ms | 29.69 ms | -34.0% |
+| 1,024 | 15 | 2 | 105.24 ms | 60.00 ms | -43.0% |
+
+The matched sparse-text layout median fell from 110.69 ms to 61.63 ms
+(-44.3%). Every layout case remains at five allocations with unchanged bytes.
+In a post-change end-to-end CPU profile, the evaluator accounts for 20.5% of
+samples flat and the optimizer for 54.6% cumulatively, down from the issue's
+58% and 79% respectively. The three-run end-to-end benchmark measured
+99.79 ms/op and 36 allocations.
+
 For issue #45, a CPU profile of the eight-component, 256-row/50-neighbor case
 showed standard `math.Pow` consuming 60.5% of samples cumulatively in the
 negative-sampling path even after attractive updates used `fastPowf`. Applying
