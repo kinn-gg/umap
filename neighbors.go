@@ -355,11 +355,11 @@ func exactWorkers(x Matrix, metric Metric, requested int) int {
 	if workers < 3 {
 		return 1
 	}
-	// Sparse cosine's inverted-index implementation is both sub-quadratic on
-	// typical sparse inputs and currently single-worker. Prefer it over the
-	// generic parallel full scan.
-	if _, ok := x.(CSR); ok && metric.Kind == Cosine {
-		return 1
+	if csr, ok := x.(CSR); ok && metric.Kind == Cosine {
+		if preferSparseCosineIndex(csr, workers) {
+			return 1
+		}
+		return workers
 	}
 	const minimumParallelWork = int64(2_000_000)
 	work := int64(rows) * int64(rows) * int64(max(1, dimensions))
@@ -367,6 +367,44 @@ func exactWorkers(x Matrix, metric Metric, requested int) int {
 		return 1
 	}
 	return workers
+}
+
+// preferSparseCosineIndex compares the work unique to the two exact backends.
+// The index visits every candidate to preserve zero-dot ties and accumulates
+// one product for every pair of values sharing a column. The full scan merges
+// two sparse rows for every candidate pair, but distributes rows over workers.
+// A factor of four accounts for the index's scattered posting-list accesses
+// and candidate bookkeeping; it is calibrated by BenchmarkExactSparseCosineCrossover.
+func preferSparseCosineIndex(x CSR, workers int) bool {
+	rows, dimensions := x.Shape()
+	if rows == 0 || len(x.values) == 0 {
+		return false
+	}
+	postingPairs := uint64(0)
+	// Avoid an allocation proportional to a mostly empty declared feature
+	// space when the CSR shape is extremely wide.
+	if dimensions <= 4*len(x.values) {
+		counts := make([]uint64, dimensions)
+		for _, column := range x.columns {
+			counts[column]++
+		}
+		for _, count := range counts {
+			postingPairs += count * count
+		}
+	} else {
+		counts := make(map[uint32]uint64, len(x.values))
+		for _, column := range x.columns {
+			counts[column]++
+		}
+		for _, count := range counts {
+			postingPairs += count * count
+		}
+	}
+	pairs := uint64(rows) * uint64(rows)
+	averageNonzeros := uint64(len(x.values)+rows-1) / uint64(rows)
+	indexWork := pairs + postingPairs
+	fullScanWork := pairs * max(uint64(1), 2*averageNonzeros) / uint64(max(1, workers))
+	return indexWork <= fullScanWork/4
 }
 
 func parallelRows(ctx context.Context, rows, workers int, fn func(int)) error {

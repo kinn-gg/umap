@@ -157,3 +157,34 @@ improved from a local 791 ms baseline to 442 ms. Compared with the issue's
 both inside the 10% memory budget. The remaining end-to-end time is primarily
 layout optimization; neighbor search is no longer the limiting stage for this
 case.
+
+## Sparse cosine backend selection (#46)
+
+Automatic exact search now chooses between the single-worker inverted index
+and the parallel full scan with a posting-aware cost model. Index work is
+estimated as `rows^2 + sum(column_frequency^2)`: the first term represents the
+candidate pass required to preserve zero-dot ties, and the second represents
+dot-product accumulation through posting lists. Full-scan work is estimated as
+`rows^2 * 2 * mean_row_nonzeros / workers`. A calibrated factor of four charges
+the index for scattered posting reads and candidate bookkeeping. Explicit
+`Workers` values are unchanged: one selects the index when eligible and larger
+values select the corresponding parallel full scan. A `MemoryBudget` continues
+to disable the index and bound the full-scan block and worker counts.
+
+The crossover matrix is reproducible with:
+
+```sh
+go test -run '^$' -bench '^BenchmarkExactSparseCosineCrossover$' \
+  -benchmem -benchtime 5x -count 3 .
+```
+
+On Linux/amd64, Go 1.27.1, i5-12600K, the 512 x 1,024 input with eight
+nonzeros per row moved from about 6.8 ms on the index to 1.6 ms automatically
+(the 8-worker full scan took 2.5 ms). The uniform 1,000 x 5,000 input with 50
+nonzeros per row retained the index at about 25.2 ms, statistically level with
+the fastest explicit eligible backend in this run. A maximally skewed version
+correctly selected the full scan (about 15.3 ms versus 153 ms for the index).
+The existing matched end-to-end sparse-text benchmark remained about 208 ms,
+inside its 5% regression allowance. Results vary with CPU scheduling; the
+automatic path can use all `GOMAXPROCS` workers while the table's explicit
+comparisons use four and eight.

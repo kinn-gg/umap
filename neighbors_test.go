@@ -62,11 +62,26 @@ func TestExactWorkerSelection(t *testing.T) {
 	if got := exactWorkers(large, NewMetric(Euclidean), 0); runtime.GOMAXPROCS(0) >= 3 && got == 1 {
 		t.Fatalf("large automatic worker count = %d, want parallel", got)
 	}
-	if got := exactWorkers(sparse, NewMetric(Cosine), 0); got != 1 {
-		t.Fatalf("sparse cosine automatic worker count = %d, want 1", got)
+	if got := exactWorkers(sparse, NewMetric(Cosine), 0); runtime.GOMAXPROCS(0) >= 3 && got == 1 {
+		t.Fatalf("empty sparse cosine automatic worker count = %d, want parallel", got)
 	}
 	if got := exactWorkers(small, NewMetric(Euclidean), 4); got != 4 {
 		t.Fatalf("explicit worker count = %d, want 4", got)
+	}
+}
+
+func TestSparseCosineBackendSelection(t *testing.T) {
+	small := sparseCosineFixture(512, 1024, 8, false)
+	text := sparseCosineFixture(1000, 5000, 50, false)
+	skewed := sparseCosineFixture(1000, 5000, 50, true)
+	if preferSparseCosineIndex(small, 8) {
+		t.Fatal("small sparse input selected inverted index")
+	}
+	if !preferSparseCosineIndex(text, 8) {
+		t.Fatal("text-like sparse input selected full scan")
+	}
+	if preferSparseCosineIndex(skewed, 8) {
+		t.Fatal("posting-list skew was not charged to inverted-index work")
 	}
 }
 
@@ -232,7 +247,15 @@ func BenchmarkNNDescentTextLike99PercentSparse(b *testing.B) {
 }
 
 func BenchmarkExactSparseTextCosine(b *testing.B) {
-	const rows, dimensions, perRow = 1000, 5000, 50
+	x := sparseCosineFixture(1000, 5000, 50, false)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		_, _ = ExactNeighborsWithOptions(context.Background(), x, 15, NewMetric(Cosine), ExactOptions{Workers: 1})
+	}
+}
+
+func sparseCosineFixture(rows, dimensions, perRow int, skewed bool) CSR {
 	values := make([]float32, rows*perRow)
 	columns := make([]uint32, rows*perRow)
 	offsets := make([]uint64, rows+1)
@@ -240,15 +263,50 @@ func BenchmarkExactSparseTextCosine(b *testing.B) {
 		offsets[r] = uint64(r * perRow)
 		for j := 0; j < perRow; j++ {
 			values[r*perRow+j] = float32((j%7)+1) / 7
-			columns[r*perRow+j] = uint32(j*97 + r%97)
+			if skewed {
+				columns[r*perRow+j] = uint32(j)
+			} else {
+				stride := max(1, dimensions/perRow)
+				columns[r*perRow+j] = uint32(j*stride + r%stride)
+			}
 		}
 	}
 	offsets[rows] = uint64(len(values))
 	x, _ := NewCSR(values, columns, offsets, rows, dimensions)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		_, _ = ExactNeighborsWithOptions(context.Background(), x, 15, NewMetric(Cosine), ExactOptions{Workers: 1})
+	return x
+}
+
+func BenchmarkExactSparseCosineCrossover(b *testing.B) {
+	cases := []struct {
+		name                     string
+		rows, dimensions, perRow int
+		skewed                   bool
+	}{
+		{"uniform/128x128/8", 128, 128, 8, false},
+		{"uniform/512x1024/8", 512, 1024, 8, false},
+		{"uniform/1000x5000/50", 1000, 5000, 50, false},
+		{"skewed/1000x5000/50", 1000, 5000, 50, true},
+	}
+	for _, c := range cases {
+		x := sparseCosineFixture(c.rows, c.dimensions, c.perRow, c.skewed)
+		options := []struct {
+			name   string
+			config ExactOptions
+		}{
+			{"index", ExactOptions{Workers: 1}},
+			{"full-4", ExactOptions{Workers: 4}},
+			{"full-8", ExactOptions{Workers: 8}},
+			{"auto", ExactOptions{}},
+			{"budget-full-8", ExactOptions{Workers: 8, MemoryBudget: int64(c.rows) * 8 * 8}},
+		}
+		for _, option := range options {
+			b.Run(fmt.Sprintf("%s/%s", c.name, option.name), func(b *testing.B) {
+				b.ReportAllocs()
+				for range b.N {
+					_, _ = ExactNeighborsWithOptions(context.Background(), x, min(15, c.rows-1), NewMetric(Cosine), option.config)
+				}
+			})
+		}
 	}
 }
 
