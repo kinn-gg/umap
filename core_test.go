@@ -204,6 +204,35 @@ func TestFastPowfAccuracy(t *testing.T) {
 	}
 }
 
+func TestLayoutClampSpecialization(t *testing.T) {
+	tests := []struct {
+		name string
+		in   float32
+		want float32
+	}{
+		{"negative overflow", -5, -4},
+		{"negative boundary", -4, -4},
+		{"negative zero", float32(math.Copysign(0, -1)), float32(math.Copysign(0, -1))},
+		{"positive zero", 0, 0},
+		{"positive boundary", 4, 4},
+		{"positive overflow", 5, 4},
+		{"negative infinity", float32(math.Inf(-1)), -4},
+		{"positive infinity", float32(math.Inf(1)), 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := clamp(tt.in, -4, 4)
+			if math.Float32bits(got) != math.Float32bits(tt.want) {
+				t.Fatalf("clamp(%v, -4, 4) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+	nan := float32(math.NaN())
+	if got := clamp(nan, -4, 4); !math.IsNaN(float64(got)) {
+		t.Fatalf("clamp(NaN, -4, 4) = %v, want NaN", got)
+	}
+}
+
 func BenchmarkExactNeighbors(b *testing.B) {
 	data := make([]float32, 256*16)
 	x, _ := NewDense(data, 256, 16)

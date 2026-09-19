@@ -203,6 +203,10 @@ func optimizeLayoutContext(ctx context.Context, initial []float32, g Graph, comp
 	return optimizeLayoutDensityContext(ctx, initial, g, components, epochs, learningRate, a, b, repulsion, negativeRate, seed, nil, DensityConfig{})
 }
 
+type edgeSchedule struct {
+	epochsPerSample, nextSample, nextNegative float32
+}
+
 func optimizeLayoutDensityContext(ctx context.Context, initial []float32, g Graph, components, epochs int, learningRate, a, b, repulsion float32, negativeRate int, seed uint64, originalRadii []float32, density DensityConfig) ([]float32, error) {
 	out := append([]float32(nil), initial...)
 	if epochs <= 0 || len(g.Edges) == 0 {
@@ -218,14 +222,24 @@ func optimizeLayoutDensityContext(ctx context.Context, initial []float32, g Grap
 			maxWeight = e.Weight
 		}
 	}
-	epochsPerSample := make([]float32, len(g.Edges))
-	nextSample := make([]float32, len(g.Edges))
-	nextNegative := make([]float32, len(g.Edges))
+	schedule := make([]edgeSchedule, len(g.Edges))
 	for i, e := range g.Edges {
-		epochsPerSample[i] = maxWeight / e.Weight
-		nextSample[i] = epochsPerSample[i]
+		schedule[i].epochsPerSample = maxWeight / e.Weight
+		schedule[i].nextSample = schedule[i].epochsPerSample
 		if negativeRate > 0 {
-			nextNegative[i] = epochsPerSample[i] / float32(negativeRate)
+			schedule[i].nextNegative = schedule[i].epochsPerSample / float32(negativeRate)
+		}
+	}
+	if components == 2 && !density.Enabled {
+		fastPowers := true
+		for _, coordinate := range out {
+			if math.IsNaN(float64(coordinate)) || math.IsInf(float64(coordinate), 0) || coordinate < -1e18 || coordinate > 1e18 {
+				fastPowers = false
+				break
+			}
+		}
+		if fastPowers {
+			return optimizeLayout2D(ctx, out, g, epochs, learningRate, a, b, repulsion, negativeRate, rng, rngBound, rngLimit, &pow, schedule)
 		}
 	}
 	for epoch := 0; epoch < epochs; epoch++ {
@@ -239,28 +253,32 @@ func optimizeLayoutDensityContext(ctx context.Context, initial []float32, g Grap
 			densityError = standardizedDifference(originalRadii, embedded, density.VarianceShift)
 		}
 		for ei, e := range g.Edges {
-			if nextSample[ei] > float32(epoch) {
+			edgeSchedule := &schedule[ei]
+			if edgeSchedule.nextSample > float32(epoch) {
 				continue
 			}
 			head, tail := e.Head, e.Tail
+			headOffset, tailOffset := head*components, tail*components
+			headPoint := out[headOffset : headOffset+components]
+			tailPoint := out[tailOffset : tailOffset+components]
 			if components == 2 && densityError == nil {
-				x := out[head*2] - out[tail*2]
-				y := out[head*2+1] - out[tail*2+1]
+				x := headPoint[0] - tailPoint[0]
+				y := headPoint[1] - tailPoint[1]
 				dist2 := x*x + y*y
 				if dist2 > 0 {
 					distPow := pow.eval(dist2)
 					gradCoeff := -2 * a * b * (distPow / dist2) / (a*distPow + 1)
 					gradX := clamp(gradCoeff*x, -4, 4) * alpha
 					gradY := clamp(gradCoeff*y, -4, 4) * alpha
-					out[head*2] += gradX
-					out[tail*2] -= gradX
-					out[head*2+1] += gradY
-					out[tail*2+1] -= gradY
+					headPoint[0] += gradX
+					tailPoint[0] -= gradX
+					headPoint[1] += gradY
+					tailPoint[1] -= gradY
 				}
 			} else {
 				dist2 := float32(0)
 				for c := 0; c < components; c++ {
-					d := out[head*components+c] - out[tail*components+c]
+					d := headPoint[c] - tailPoint[c]
 					dist2 += d * d
 				}
 				if dist2 > 0 {
@@ -272,51 +290,117 @@ func optimizeLayoutDensityContext(ctx context.Context, initial []float32, g Grap
 						gradCoeff -= density.Lambda * (densityError[head] + densityError[tail]) / (dist2 + density.VarianceShift)
 					}
 					for c := 0; c < components; c++ {
-						d := out[head*components+c] - out[tail*components+c]
+						d := headPoint[c] - tailPoint[c]
 						grad := clamp(gradCoeff*d, -4, 4) * alpha
-						out[head*components+c] += grad
-						out[tail*components+c] -= grad
+						headPoint[c] += grad
+						tailPoint[c] -= grad
 					}
 				}
 			}
-			nextSample[ei] += epochsPerSample[ei]
+			edgeSchedule.nextSample += edgeSchedule.epochsPerSample
 			nNeg := 0
+			epochsPerNegative := float32(0)
 			if negativeRate > 0 {
-				nNeg = int((float32(epoch) - nextNegative[ei]) / (epochsPerSample[ei] / float32(negativeRate)))
+				epochsPerNegative = edgeSchedule.epochsPerSample / float32(negativeRate)
+				nNeg = int((float32(epoch) - edgeSchedule.nextNegative) / epochsPerNegative)
 			}
 			for q := 0; q < nNeg; q++ {
 				k := rng.intnBounded(rngBound, rngLimit)
 				if k == head {
 					continue
 				}
+				negativeOffset := k * components
+				negativePoint := out[negativeOffset : negativeOffset+components]
 				if components == 2 && densityError == nil {
-					x := out[head*2] - out[k*2]
-					y := out[head*2+1] - out[k*2+1]
+					x := headPoint[0] - negativePoint[0]
+					y := headPoint[1] - negativePoint[1]
 					d2 := x*x + y*y
 					if d2 > 0 {
 						distPow := pow.eval(d2)
 						coeff := 2 * repulsion * b / ((.001 + d2) * (a*distPow + 1))
-						out[head*2] += clamp(coeff*x, -4, 4) * alpha
-						out[head*2+1] += clamp(coeff*y, -4, 4) * alpha
+						headPoint[0] += clamp(coeff*x, -4, 4) * alpha
+						headPoint[1] += clamp(coeff*y, -4, 4) * alpha
 					}
 					continue
 				}
 				d2 := float32(0)
 				for c := 0; c < components; c++ {
-					d := out[head*components+c] - out[k*components+c]
+					d := headPoint[c] - negativePoint[c]
 					d2 += d * d
 				}
 				if d2 > 0 {
 					distPow := pow.eval(d2)
 					coeff := 2 * repulsion * b / ((.001 + d2) * (a*distPow + 1))
 					for c := 0; c < components; c++ {
-						d := out[head*components+c] - out[k*components+c]
-						out[head*components+c] += clamp(coeff*d, -4, 4) * alpha
+						d := headPoint[c] - negativePoint[c]
+						headPoint[c] += clamp(coeff*d, -4, 4) * alpha
 					}
 				}
 			}
 			if negativeRate > 0 {
-				nextNegative[ei] += float32(nNeg) * epochsPerSample[ei] / float32(negativeRate)
+				edgeSchedule.nextNegative += float32(nNeg) * epochsPerNegative
+			}
+		}
+	}
+	return out, nil
+}
+
+// optimizeLayout2D keeps the overwhelmingly common non-density path free of
+// component and density branches in the per-edge and negative-sampling loops.
+func optimizeLayout2D(ctx context.Context, out []float32, g Graph, epochs int, learningRate, a, b, repulsion float32, negativeRate int, rng *RNG, rngBound, rngLimit uint64, pow *fastPowfEvaluator, schedule []edgeSchedule) ([]float32, error) {
+	for epoch := 0; epoch < epochs; epoch++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		alpha := learningRate * (1 - float32(epoch)/float32(epochs))
+		for ei, e := range g.Edges {
+			edgeSchedule := &schedule[ei]
+			if edgeSchedule.nextSample > float32(epoch) {
+				continue
+			}
+			head, tail := e.Head, e.Tail
+			headOffset, tailOffset := head*2, tail*2
+			headPoint := out[headOffset : headOffset+2]
+			tailPoint := out[tailOffset : tailOffset+2]
+			x := headPoint[0] - tailPoint[0]
+			y := headPoint[1] - tailPoint[1]
+			dist2 := x*x + y*y
+			if dist2 > 0 {
+				distPow := pow.evalNormal(dist2)
+				gradCoeff := -2 * a * b * (distPow / dist2) / (a*distPow + 1)
+				gradX := clamp(gradCoeff*x, -4, 4) * alpha
+				gradY := clamp(gradCoeff*y, -4, 4) * alpha
+				headPoint[0] += gradX
+				tailPoint[0] -= gradX
+				headPoint[1] += gradY
+				tailPoint[1] -= gradY
+			}
+			edgeSchedule.nextSample += edgeSchedule.epochsPerSample
+			nNeg := 0
+			epochsPerNegative := float32(0)
+			if negativeRate > 0 {
+				epochsPerNegative = edgeSchedule.epochsPerSample / float32(negativeRate)
+				nNeg = int((float32(epoch) - edgeSchedule.nextNegative) / epochsPerNegative)
+			}
+			for q := 0; q < nNeg; q++ {
+				k := rng.intnBounded(rngBound, rngLimit)
+				if k == head {
+					continue
+				}
+				kOffset := k * 2
+				negativePoint := out[kOffset : kOffset+2]
+				x = headPoint[0] - negativePoint[0]
+				y = headPoint[1] - negativePoint[1]
+				dist2 = x*x + y*y
+				if dist2 > 0 {
+					distPow := pow.evalNormal(dist2)
+					coeff := 2 * repulsion * b / ((.001 + dist2) * (a*distPow + 1))
+					headPoint[0] += clamp(coeff*x, -4, 4) * alpha
+					headPoint[1] += clamp(coeff*y, -4, 4) * alpha
+				}
+			}
+			if negativeRate > 0 {
+				edgeSchedule.nextNegative += float32(nNeg) * epochsPerNegative
 			}
 		}
 	}
@@ -383,6 +467,20 @@ func standardizedDifference(original, embedded []float32, shift float32) []float
 	return out
 }
 func clamp(x, lo, hi float32) float32 {
+	// Layout always clamps symmetrically to [-4, 4]. Comparing the magnitude
+	// once avoids a second, frequently executed floating-point branch while
+	// retaining the old behavior for infinities, signed zero, and NaNs.
+	if lo == -4 && hi == 4 {
+		bits := math.Float32bits(x)
+		magnitude := bits & 0x7fffffff
+		if magnitude > 0x40800000 {
+			if magnitude > 0x7f800000 {
+				return x
+			}
+			return math.Float32frombits(bits&0x80000000 | 0x40800000)
+		}
+		return x
+	}
 	if x < lo {
 		return lo
 	}
@@ -400,8 +498,11 @@ const powTableSize = 1 << powTableBits
 // and one multiply; initialization is amortized over all sampled updates.
 type fastPowfEvaluator struct {
 	mantissa [powTableSize + 1]float32
-	exponent [254]float32
+	delta    [powTableSize]float32
+	exponent [256]float32
 	p        float32
+	minExp   uint32
+	maxExp   uint32
 }
 
 func newFastPowfEvaluator(p float32) fastPowfEvaluator {
@@ -410,8 +511,18 @@ func newFastPowfEvaluator(p float32) fastPowfEvaluator {
 	for i := range evaluator.mantissa {
 		evaluator.mantissa[i] = float32(math.Pow(1+float64(i)/powTableSize, float64(p)))
 	}
-	for i := range evaluator.exponent {
-		evaluator.exponent[i] = float32(math.Exp2(float64((i - 126)) * float64(p)))
+	for i := range evaluator.delta {
+		evaluator.delta[i] = evaluator.mantissa[i+1] - evaluator.mantissa[i]
+	}
+	for i := 1; i < len(evaluator.exponent)-1; i++ {
+		evaluator.exponent[i] = float32(math.Exp2(float64((i - 127)) * float64(p)))
+		exponentBits := (math.Float32bits(evaluator.exponent[i]) >> 23) & 0xff
+		if exponentBits != 0 && exponentBits != 0xff {
+			if evaluator.minExp == 0 {
+				evaluator.minExp = uint32(i)
+			}
+			evaluator.maxExp = uint32(i)
+		}
 	}
 	return evaluator
 }
@@ -419,17 +530,22 @@ func newFastPowfEvaluator(p float32) fastPowfEvaluator {
 func (e *fastPowfEvaluator) eval(x float32) float32 {
 	bits := math.Float32bits(x)
 	exponentBits := (bits >> 23) & 0xff
-	if exponentBits == 0 || exponentBits == 0xff {
+	if exponentBits < e.minExp || exponentBits > e.maxExp {
 		return float32(math.Pow(float64(x), float64(e.p)))
 	}
-	scale := e.exponent[exponentBits-1]
-	scaleExponent := (math.Float32bits(scale) >> 23) & 0xff
-	if scaleExponent == 0 || scaleExponent == 0xff {
-		return float32(math.Pow(float64(x), float64(e.p)))
-	}
+	return e.evalNormalBits(bits, exponentBits)
+}
+
+func (e *fastPowfEvaluator) evalNormal(x float32) float32 {
+	bits := math.Float32bits(x)
+	return e.evalNormalBits(bits, (bits>>23)&0xff)
+}
+
+func (e *fastPowfEvaluator) evalNormalBits(bits, exponentBits uint32) float32 {
+	scale := e.exponent[exponentBits]
 	mantissaBits := bits & 0x007fffff
 	index := mantissaBits >> (23 - powTableBits)
 	fraction := float32(mantissaBits&((1<<(23-powTableBits))-1)) * (1.0 / (1 << (23 - powTableBits)))
 	lo := e.mantissa[index]
-	return scale * (lo + fraction*(e.mantissa[index+1]-lo))
+	return scale * (lo + fraction*e.delta[index])
 }

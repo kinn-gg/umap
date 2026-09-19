@@ -139,6 +139,47 @@ go test -run '^$' -bench 'BenchmarkFitStages/rows/256/layout$' \
 go tool pprof -top layout.pprof
 ```
 
+#### Follow-up layout profile (#59)
+
+Fresh profiles after issues #51 and #52 no longer show a single dominant
+layout operation. In the matched sparse-text layout, the baseline profile
+attributed 52.0% flat to the optimizer loop, 31.9% cumulatively to the power
+evaluator, 11.3% to gradient clamping, and 2.8% to bounded RNG. The
+256-row/50-neighbor profile similarly attributed 57.6% flat to the optimizer,
+25.6% cumulatively to power evaluation, 9.8% to clamping, and 5.3% to RNG.
+Allocation profiles remained schedule- and output-slice dominated.
+
+The follow-up groups the three per-edge schedule arrays into one compact
+record, specializes the ordinary two-component loop, removes redundant power
+range checks after validating the initial coordinates, groups component
+bounds checks, and uses a single magnitude comparison for the symmetric
+gradient clamp. Update order, negative-sample RNG order, and ordinary finite
+results remain unchanged. Five-run medians on Linux/amd64, Go 1.27.1,
+i5-12600K were:
+
+| Rows | Neighbors | Components | Before | After | Change |
+|---:|---:|---:|---:|---:|---:|
+| 64 | 15 | 2 | 3.643 ms | 3.565 ms | -2.1% |
+| 256 | 15 | 2 | 14.657 ms | 14.089 ms | -3.9% |
+| 256 | 50 | 2 | 22.511 ms | 21.343 ms | -5.2% |
+| 256 | 15 | 8 | 19.337 ms | 18.001 ms | -6.9% |
+| 256 | 50 | 8 | 29.370 ms | 26.997 ms | -8.1% |
+| 1,024 | 15 | 2 | 59.583 ms | 56.929 ms | -4.5% |
+
+The layout-matrix geometric mean improved by 5.4%. Layout allocations fell
+from five to three per call; allocated bytes were unchanged except for the
+64-row case, where they fell from 15,120 to 14,096 bytes. The matched
+sparse-text layout median improved from 62.150 ms to 59.891 ms (-3.6% elapsed,
+3.8% throughput), and its seven-run end-to-end median improved from 100.846 ms
+to 95.207 ms (-5.6% elapsed, 5.9% throughput). End-to-end allocated bytes were
+unchanged.
+
+The post-change sparse-text profile attributes 55.6% flat to the specialized
+optimizer loop, 32.0% cumulatively to power evaluation, 8.4% to clamping, and
+2.7% to bounded RNG. This confirms that the remaining cost is distributed
+across sequential coordinate arithmetic and power lookup rather than hidden
+in allocation, transcendental functions, or RNG.
+
 ### Sparse-text fit profile
 
 `BenchmarkSparseTextFitStages` uses the matched 1,000-row by 5,000-dimension,
