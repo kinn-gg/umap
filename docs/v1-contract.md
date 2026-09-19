@@ -4,8 +4,7 @@ Status: **v1 contract**
 
 Last updated: 2026-09-18
 
-This document defines the v1 surface and compatibility expectations. The table
-is authoritative where earlier proposed names differ from the shipped API.
+This document defines the v1 surface and compatibility expectations.
 
 ## Reference and meaning of compatibility
 
@@ -189,12 +188,13 @@ model, embedding, err := reducer.FitTransform(ctx, x, labels)
 
 ## Defaults and Python parameter mapping
 
-“v1” means required before the v1.0 compatibility claim. “Deferred” means it is
-not silently approximated; requesting the behavior returns `UnsupportedError`.
+“v1” identifies behavior covered by the compatibility contract. “Deferred”
+means it is not silently approximated; requesting the behavior returns
+`UnsupportedError`.
 Options omitted from the Go API because they are automatic or replaced by a Go
 mechanism are still listed.
 
-| Python 0.5.12 parameter (default) | Proposed Go mapping/default | Status and notes |
+| Python 0.5.12 parameter (default) | Go mapping/default | Status and notes |
 |---|---|---|
 | `n_neighbors=15` | `Config.Neighbors=15` | v1 |
 | `n_components=2` | `Config.Components=2` | v1 |
@@ -240,7 +240,7 @@ maps to `FitTransform(ctx, x, y)`, returning both the reusable model and its
 embedding. Python `transform(X)` maps to `Model.Transform(ctx, x)` or
 `TransformInto`. Go does not mutate a public estimator into a fitted state.
 
-Initially deferred behavior is therefore: unsupported input/output and callable
+Deferred behavior is: unsupported input/output and callable
 metrics, PCA/tswspectral/custom initialization, graph transform mode, external
 precomputed neighbors, uniquing, permissive NaN handling, Python object/pickle
 compatibility, and progress UI. Model serialization is a separate versioned Go

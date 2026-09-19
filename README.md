@@ -3,20 +3,20 @@
 `umap` is a production-oriented, allocation-conscious Go implementation of
 Uniform Manifold Approximation and Projection (UMAP) for Go 1.24 and newer.
 
-The deterministic single-threaded implementation includes:
+The implementation includes:
 
 - validated zero-copy row-major dense and canonical CSR matrices;
 - dense and sparse distance evaluation, exact neighbors, smooth-kNN distances,
   and compact fuzzy graph construction;
-- random and spectral initialization plus reference layout optimization; and
-- deterministic seed derivation and sampling independent of architecture.
+- random and spectral initialization plus reference layout optimization;
+- deterministic seed derivation and sampling independent of architecture;
 - blocked exact and deterministic NN-descent neighbor search with cancellation,
   progress reporting, and an explicit graph memory model;
 - allocation-free CSR distance kernels that keep sparse inputs sparse through
-  graph construction.
+  graph construction;
 - reusable fit/transform models for dense and sparse observations;
-- categorical, semi-supervised, and continuous target-informed fitting; and
-- checksummed, versioned model serialization with bounded decoding.
+- categorical, semi-supervised, and continuous target-informed fitting;
+- checksummed, versioned model serialization with bounded decoding; and
 - densMAP density preservation and optional original/embedding density radii.
 
 ```go
@@ -52,8 +52,8 @@ change the embedding.
 - [Getting started, tuning, migration, and serialization](docs/guide.md)
 - [Supported-feature compatibility matrix and known differences](docs/compatibility.md)
 - [API contract and numerical tolerances](docs/v1-contract.md)
-- [Reproducible benchmark results and regression policy](docs/m4-performance.md)
-- [Scalable search controls and memory accounting](docs/m2-neighbor-search.md)
+- [Reproducible performance and memory benchmarks](benchmarks/README.md)
+- [Differential parity harness](parity/README.md)
 - [Release, semantic-versioning, and attribution policy](docs/releasing.md)
 
 The implementation follows the UMAP and densMAP papers and pins compatibility
