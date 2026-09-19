@@ -247,3 +247,35 @@ machine-readable results and explaining the regression.
 Historical comparisons must match dataset checksum, effective parameters,
 warmup count, suite version, architecture, and runtime versions. The Python
 runner records warmup and measured time separately so JIT cost is never hidden.
+
+## Canonical matched result after sparse-selector retuning
+
+The checked-in artifacts were generated from main commit
+`ca3081c74094e4b406f317b3711ff7b949909713` with the standard one untimed
+warmup and five measured repeats. The host was Linux 7.0.0-31-generic on a
+16-logical-CPU Intel Core i5-12600K. The toolchain was Go 1.27.1, uv 0.12.7,
+Python 3.11.16, NumPy 2.2.6, SciPy 1.15.3, scikit-learn 1.6.1, Numba 0.61.2,
+PyNNDescent 0.5.13, and umap-learn 0.5.12.
+
+All 13 matched cases were faster in Go. Python/Go median runtime ratios ranged
+from 1.72x for `synthetic/sparse-text` to 4.74x for `synthetic/rows/64`. The
+largest Go coefficient of variation was 2.03% (`synthetic/dimensions/128`),
+and the largest Python coefficient of variation was 8.74%
+(`synthetic/metric/euclidean`). Go peak RSS was 24.6 MiB throughout the suite.
+
+The canonical input SHA-256 values are:
+
+| Cases | SHA-256 |
+|---|---|
+| `synthetic/rows/64` | `7a50ad82588bb9edda9dcce1281705de3ac95c555f07204209d57cca5cb25b9f` |
+| `synthetic/rows/1024` | `92b016032eef36b8889ce69d27243a5d6c778172392240a33e0d3d4f2c89e00f` |
+| `synthetic/dimensions/2` | `b0a7bc92803cc31d9a810186eb2e23cbc860159216079a95fd2d15b437489eb7` |
+| `synthetic/dimensions/128` | `192de6cc60817f3be1407273660aee9aca43488cbd5a09dd292755559c689a06` |
+| `synthetic/neighbors/{5,50}`, `synthetic/components/{2,8}`, `synthetic/metric/{euclidean,cosine}` | `b73ee4d65e1a52d868d2b39a862cfa63e40537c0245af8d0c50902e0cbbcb1c5` |
+| `synthetic/density/0.05` | `b5c2b256959885a3ea2aae1794d80f95ddd62541672bfc1b6fc34dc4a0d89c06` |
+| `synthetic/density/0.5` | `cdd74ad6b68281319d82032a7b42ef19fb7b524ff4e2d14b3b95fbf98150b15b` |
+| `synthetic/sparse-text` | `30d311188c145ce22fbe0e69f28977394a9bed0a42a1ac7eb71393aab0bc0c95` |
+
+The JSONL files retain every measured sample, mean, standard deviation,
+allocation probe, and peak-RSS observation. `umap-comparison.json` is the
+validated, machine-readable summary.
