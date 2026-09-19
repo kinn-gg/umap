@@ -119,6 +119,13 @@ func ExactNeighborsWithOptions(ctx context.Context, x Matrix, k int, metric Metr
 	if csr, ok := x.(CSR); ok && metric.Kind == Cosine && opts.MemoryBudget == 0 && workers == 1 {
 		return exactSparseCosineNeighbors(ctx, csr, out, block, opts.Progress)
 	}
+	// An automatically selected sparse full scan has no caller-supplied memory
+	// bound. Visit the whole candidate range in one pass to avoid repeatedly
+	// scheduling the row workers at the default block boundary. Explicit block,
+	// worker, and memory-budget settings retain their existing behavior.
+	if _, ok := x.(CSR); ok && metric.Kind == Cosine && opts.BlockSize == 0 && opts.MemoryBudget == 0 && opts.Workers == 0 {
+		block = n
+	}
 	distance := newMatrixDistanceEvaluator(metric, x)
 	if opts.MemoryBudget > 0 {
 		workers = min(workers, max(1, int(opts.MemoryBudget/max(1, int64(block)*8))))
@@ -359,6 +366,11 @@ func exactWorkers(x Matrix, metric Metric, requested int) int {
 		if preferSparseCosineIndex(csr, workers) {
 			return 1
 		}
+		// Short sparse scans become scheduler-bound before using every logical
+		// CPU. Eight workers is the measured crossover for sub-256-row inputs.
+		if rows < 256 {
+			return min(workers, 8)
+		}
 		return workers
 	}
 	const minimumParallelWork = int64(2_000_000)
@@ -373,7 +385,7 @@ func exactWorkers(x Matrix, metric Metric, requested int) int {
 // The index visits every candidate to preserve zero-dot ties and accumulates
 // one product for every pair of values sharing a column. The full scan merges
 // two sparse rows for every candidate pair, but distributes rows over workers.
-// A factor of four accounts for the index's scattered posting-list accesses
+// A factor of ten accounts for the index's scattered posting-list accesses
 // and candidate bookkeeping; it is calibrated by BenchmarkExactSparseCosineCrossover.
 func preferSparseCosineIndex(x CSR, workers int) bool {
 	rows, dimensions := x.Shape()
@@ -404,7 +416,7 @@ func preferSparseCosineIndex(x CSR, workers int) bool {
 	averageNonzeros := uint64(len(x.values)+rows-1) / uint64(rows)
 	indexWork := pairs + postingPairs
 	fullScanWork := pairs * max(uint64(1), 2*averageNonzeros) / uint64(max(1, workers))
-	return indexWork <= fullScanWork/4
+	return indexWork <= fullScanWork/10
 }
 
 func parallelRows(ctx context.Context, rows, workers int, fn func(int)) error {

@@ -55,6 +55,7 @@ func TestParallelNeighborSearchReproducible(t *testing.T) {
 func TestExactWorkerSelection(t *testing.T) {
 	small, _ := NewDense(make([]float32, 64*8), 64, 8)
 	large, _ := NewDense(make([]float32, 512*32), 512, 32)
+	smallSparse := sparseCosineFixture(128, 128, 8, false)
 	sparse, _ := NewCSR(nil, nil, make([]uint64, 513), 512, 32)
 	if got := exactWorkers(small, NewMetric(Euclidean), 0); got != 1 {
 		t.Fatalf("small automatic worker count = %d, want 1", got)
@@ -65,6 +66,9 @@ func TestExactWorkerSelection(t *testing.T) {
 	if got := exactWorkers(sparse, NewMetric(Cosine), 0); runtime.GOMAXPROCS(0) >= 3 && got == 1 {
 		t.Fatalf("empty sparse cosine automatic worker count = %d, want parallel", got)
 	}
+	if got, want := exactWorkers(smallSparse, NewMetric(Cosine), 0), min(runtime.GOMAXPROCS(0), 8); got != want {
+		t.Fatalf("small sparse cosine automatic worker count = %d, want %d", got, want)
+	}
 	if got := exactWorkers(small, NewMetric(Euclidean), 4); got != 4 {
 		t.Fatalf("explicit worker count = %d, want 4", got)
 	}
@@ -73,12 +77,16 @@ func TestExactWorkerSelection(t *testing.T) {
 func TestSparseCosineBackendSelection(t *testing.T) {
 	small := sparseCosineFixture(512, 1024, 8, false)
 	text := sparseCosineFixture(1000, 5000, 50, false)
+	verySparse := sparseCosineFixture(1000, 50000, 50, false)
 	skewed := sparseCosineFixture(1000, 5000, 50, true)
 	if preferSparseCosineIndex(small, 8) {
 		t.Fatal("small sparse input selected inverted index")
 	}
-	if !preferSparseCosineIndex(text, 8) {
-		t.Fatal("text-like sparse input selected full scan")
+	if preferSparseCosineIndex(text, 8) {
+		t.Fatal("text-like crossover input selected inverted index")
+	}
+	if !preferSparseCosineIndex(verySparse, 8) {
+		t.Fatal("very sparse text input selected full scan")
 	}
 	if preferSparseCosineIndex(skewed, 8) {
 		t.Fatal("posting-list skew was not charged to inverted-index work")
