@@ -189,14 +189,15 @@ func BenchmarkEuclidean(b *testing.B) {
 }
 
 func TestFastPowfAccuracy(t *testing.T) {
-	for exponent := -20; exponent <= 20; exponent++ {
-		for mantissa := float32(1); mantissa < 2; mantissa += 1.0 / 32 {
-			x := float32(math.Ldexp(float64(mantissa), exponent))
-			for _, p := range []float32{0.5, 0.8950609, 1, 1.5} {
+	for _, p := range []float32{0.5, 0.8950609, 1, 1.5} {
+		evaluator := newFastPowfEvaluator(p)
+		for exponent := -20; exponent <= 20; exponent++ {
+			for mantissa := float32(1); mantissa < 2; mantissa += 1.0 / 32 {
+				x := float32(math.Ldexp(float64(mantissa), exponent))
 				want := float32(math.Pow(float64(x), float64(p)))
-				got := fastPowf(x, p)
+				got := evaluator.eval(x)
 				if relative := math.Abs(float64(got-want)) / float64(want); relative > 2e-5 {
-					t.Fatalf("fastPowf(%g, %g) = %g, want %g (relative error %g)", x, p, got, want, relative)
+					t.Fatalf("fastPowfEvaluator(%g, %g) = %g, want %g (relative error %g)", x, p, got, want, relative)
 				}
 			}
 		}
