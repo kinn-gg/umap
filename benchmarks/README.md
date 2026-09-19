@@ -50,7 +50,10 @@ fit dominated the 64-row path: it evaluates 300 samples for 2,000 optimizer
 steps for every call. Completed fits are now cached by the exact IEEE-754 bits
 of `(spread, min_dist)`. This preserves the fitted values and concurrency
 safety while removing that fixed cost after the first use of a configuration.
-The `curve-fit/cold` and `curve-fit/cached` stages keep both costs visible.
+The default pair also has a bit-identical precomputed result. Non-default fits
+precompute the target samples and logarithms used by every optimizer step.
+The `curve-fit/cold/default`, `curve-fit/cold/non-default`, and
+`curve-fit/cached` stages keep all three costs visible.
 
 ### Layout optimization profile
 

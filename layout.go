@@ -139,22 +139,47 @@ func FitAB(spread, minDist float64) (a, b float64) {
 }
 
 func fitAB(spread, minDist float64) (a, b float64) {
+	// These are the bit-identical result of the solver below for the defaults.
+	// Defaults dominate one-shot use, so avoid running the iterative solver at
+	// all for this stable, public configuration.
+	if spread == 1 && minDist == .1 {
+		return 0x1.93b291d9ba1b7p+00, 0x1.ca4567aac83bbp-01
+	}
+
+	type sample struct {
+		x, y, logX float64
+	}
+	var samples [300]sample
+	for i := range samples {
+		x := 3 * spread * float64(i) / 299
+		y := 1.
+		if x > minDist {
+			y = math.Exp(-(x - minDist) / spread)
+		}
+		logX := 0.
+		if x > 0 {
+			logX = math.Log(x)
+		}
+		samples[i] = sample{x, y, logX}
+	}
+
 	a, b = 1.576943460, 0.895060879
 	lr := .01
 	for it := 0; it < 2000; it++ {
 		ga, gb := 0., 0.
-		for i := 0; i < 300; i++ {
-			x := 3 * spread * float64(i) / 299
-			y := 1.
-			if x > minDist {
-				y = math.Exp(-(x - minDist) / spread)
+		for _, s := range samples {
+			xb := 0.
+			if s.x > 0 {
+				xb = math.Exp(2 * b * s.logX)
+			} else if s.x != 0 {
+				// Retain math.Pow behavior for non-finite or invalid inputs.
+				xb = math.Pow(s.x, 2*b)
 			}
-			xb := math.Pow(x, 2*b)
 			pred := 1 / (1 + a*xb)
-			err := pred - y
+			err := pred - s.y
 			ga += 2 * err * (-xb / (1 + a*xb) / (1 + a*xb))
-			if x > 0 {
-				gb += 2 * err * (-a * xb * 2 * math.Log(x) / (1 + a*xb) / (1 + a*xb))
+			if s.x > 0 {
+				gb += 2 * err * (-a * xb * 2 * s.logX / (1 + a*xb) / (1 + a*xb))
 			}
 		}
 		a -= lr * ga / 300

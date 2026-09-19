@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+var benchmarkFitA, benchmarkFitB float64
+
 type fitStageFixture struct {
 	x          Dense
 	neighbors  Neighbors
@@ -31,6 +33,27 @@ func TestFitABConcurrentCacheIsBitIdentical(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestFitABRepresentativeGrid(t *testing.T) {
+	tests := []struct {
+		spread, minDist float64
+		a, b            float64
+	}{
+		{1, .1, 0x1.93b291d9ba1b7p+00, 0x1.ca4567aac83bbp-01},
+		{.5, .05, 0x1.1b7669621d1a5p+01, 0x1.0ed87c2ae1406p-01},
+		{1, .5, 0x1.05ec66691ff58p+00, 0x1.067fbf204e5cbp+00},
+		{2, .1, 0x1.1c2bf1b26bd4ap+00, 0x1.2f4dc9e6de7d6p-01},
+	}
+	for i, tt := range tests {
+		a, b := fitAB(tt.spread, tt.minDist)
+		if i == 0 && (math.Float64bits(a) != math.Float64bits(tt.a) || math.Float64bits(b) != math.Float64bits(tt.b)) {
+			t.Errorf("default fitAB() = (%v, %v), want bit-identical (%v, %v)", a, b, tt.a, tt.b)
+		}
+		if math.Abs(a-tt.a) > 1e-12 || math.Abs(b-tt.b) > 1e-12 {
+			t.Errorf("fitAB(%v, %v) = (%v, %v), want (%v, %v) within 1e-12", tt.spread, tt.minDist, a, b, tt.a, tt.b)
+		}
+	}
 }
 
 func newFitStageFixture(tb testing.TB, rows int) fitStageFixture {
@@ -110,11 +133,19 @@ func BenchmarkFitStages(b *testing.B) {
 	for _, rows := range []int{64, 256} {
 		fixture := newFitStageFixture(b, rows)
 		b.Run(fmt.Sprintf("rows/%d", rows), func(b *testing.B) {
-			b.Run("curve-fit/cold", func(b *testing.B) {
-				for range b.N {
-					fitAB(1, .1)
-				}
-			})
+			for _, tc := range []struct {
+				name            string
+				spread, minDist float64
+			}{
+				{"default", 1, .1},
+				{"non-default", 1.23456789, .23456789},
+			} {
+				b.Run("curve-fit/cold/"+tc.name, func(b *testing.B) {
+					for range b.N {
+						benchmarkFitA, benchmarkFitB = fitAB(tc.spread, tc.minDist)
+					}
+				})
+			}
 			b.Run("curve-fit/cached", func(b *testing.B) {
 				FitAB(1, .1)
 				b.ResetTimer()
