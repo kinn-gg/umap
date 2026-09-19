@@ -92,6 +92,39 @@ optimization therefore retains the existing 64-iteration bound, tolerance,
 and arithmetic while eliminating more than 99% of allocations and reducing
 allocated bytes by 88.9%.
 
+## Fuzzy graph construction (#37)
+
+`BenchmarkFuzzyGraph` measures graph construction for 64, 256, and 1,024 rows
+at both 15 and 50 neighbors. The optimized path records row offsets after the
+directed memberships are sorted, limits each reverse-edge binary search to one
+row, and performs one lookup per membership. Final edges are grouped in linear
+time and only the tails within each row are sorted. The original first-entry
+rule for duplicate directed memberships and the final `(head, tail)` ordering
+remain bit-identical.
+
+Five local runs on Linux/amd64, Go 1.27.1, i5-12600K produced these medians:
+
+| rows | neighbors | before | after | change |
+| ---: | ---: | ---: | ---: | ---: |
+| 64 | 15 | 0.227 ms | 0.106 ms | -53.1% |
+| 64 | 50 | 0.900 ms | 0.609 ms | -32.3% |
+| 256 | 15 | 1.120 ms | 0.651 ms | -41.8% |
+| 256 | 50 | 4.247 ms | 2.526 ms | -40.5% |
+| 1,024 | 15 | 4.621 ms | 2.457 ms | -46.8% |
+| 1,024 | 50 | 17.451 ms | 7.693 ms | -55.9% |
+
+At the acceptance case (256 rows, 50 neighbors), allocated bytes increased
+from 917,696 to 921,952 (+0.46%) while allocations fell from eight to seven.
+The two row-sized integer work arrays account for the small increase; retained
+graph storage is unchanged. A representative 256-row, 16-dimensional
+end-to-end fit moved from a 43.6 ms median to 43.1 ms (-1.2%), so the matched
+pipeline stays within the 5% regression threshold. Reproduce the graph results
+with:
+
+```sh
+go test -run '^$' -bench '^BenchmarkFuzzyGraph$' -benchmem -count 5 .
+```
+
 ## Sparse cosine investigation (#29)
 
 The matched `synthetic/sparse-text` workload was dominated by exact neighbor
