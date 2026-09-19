@@ -188,3 +188,43 @@ The existing matched end-to-end sparse-text benchmark remained about 208 ms,
 inside its 5% regression allowance. Results vary with CPU scheduling; the
 automatic path can use all `GOMAXPROCS` workers while the table's explicit
 comparisons use four and eight.
+
+## Low-density input layout (#51)
+
+`BenchmarkDensityFitStages` reproduces both matched density-axis inputs with
+the same SplitMix64 generator, seed 42, 256 x 16 shape, 15 neighbors, two
+components, Euclidean metric, random initialization, one worker, and 100
+epochs. A checksum test locks the fixtures to the benchmark-suite artifacts.
+The benchmark name records graph structure: the 5%-dense input has 216
+nonzeros and 6,574 directed graph edges; the 50%-dense input has 2,014
+nonzeros and 5,756 edges.
+
+The low-density input contains many empty or nearly empty rows. Their tied
+zero distances produce fuzzy-graph memberships at or near weight one. Layout
+therefore schedules a much larger fraction of graph edges on every epoch and
+also performs the associated five negative samples. This explains why layout,
+not sparse validation or neighbor search, grows from about 46.5 ms to 111.1 ms
+in the baseline stage run (2.39x), matching the end-to-end regression.
+
+The CPU profile attributed 72% of low-density layout samples to `fastPowf`.
+Its range reduction now uses linearly interpolated 256-entry log2 and exp2
+tables instead of a division and two long scalar polynomials. The existing
+2e-5 relative-error test still covers powers and distances across 41 binary
+exponents, and repeated layouts remain bit-identical. On Linux/amd64, Go
+1.27.1, i5-12600K, the isolated 5% layout improved from 111.1 ms to 71.4 ms
+(35.7%); the 50% layout improved from 46.5 ms to 31.3 ms. Allocations are
+unchanged at five per layout (83,856 and 75,792 bytes respectively).
+
+Seven-run matched end-to-end medians improved from 114.4 ms to 74.0 ms for
+density 0.05 (-35.3%) and from 54.5 ms to 35.8 ms for density 0.5 (-34.3%).
+The full matched suite showed every Go case faster than its Python reference;
+the density cases reached 1.24x and 1.23x Python/Go respectively.
+
+Reproduce the stages and CPU/allocation profiles with:
+
+```sh
+go test -run '^$' -bench '^BenchmarkDensityFitStages$' -benchmem -benchtime 10x .
+make profiles-low-density
+go tool pprof -top low-density.cpu.pprof
+go tool pprof -top -alloc_space low-density.heap.pprof
+```

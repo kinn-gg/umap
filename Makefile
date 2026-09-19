@@ -1,4 +1,4 @@
-.PHONY: test race parity-generate parity-full bench-go bench-density bench-python bench-compare profiles profiles-small profiles-sparse
+.PHONY: test race parity-generate parity-full bench-go bench-density bench-python bench-compare profiles profiles-small profiles-sparse profiles-low-density
 test:
 	go test ./...
 race:
@@ -24,3 +24,5 @@ profiles-small:
 	go test -run '^$$' -bench BenchmarkFitStages -benchtime 5x -cpuprofile small-input.cpu.pprof -memprofile small-input.heap.pprof .
 profiles-sparse:
 	go test -run '^$$' -bench BenchmarkSparseTextFitEndToEnd -benchtime 3x -cpuprofile sparse-cpu.pprof -memprofile sparse-heap.pprof .
+profiles-low-density:
+	go test -run '^$$' -bench 'BenchmarkDensityFitStages/density/0.05/nonzeros/216/edges/6574/layout' -benchtime 20x -cpuprofile low-density.cpu.pprof -memprofile low-density.heap.pprof .
