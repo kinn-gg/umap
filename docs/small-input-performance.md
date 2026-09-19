@@ -48,6 +48,30 @@ parameters. The first use still performs the same calculation; subsequent
 fits reuse the bit-identical result. Concurrent callers use `sync.Map` and may
 race only to calculate the same immutable value.
 
+Issue #47 reduced that remaining first-use cost. The default `(spread=1,
+min_dist=0.1)` result is now returned as the hexadecimal floating-point values
+produced by the original solver, making it bit-identical without repeating an
+iterative fit. For other parameter pairs, the 300 target samples and their
+logarithms are computed once, outside the 2,000 optimizer steps, and powers are
+evaluated from the precomputed logarithms.
+
+On the same Linux/amd64 host, three 500 ms benchmark runs measured the default
+cold calculation at about 1.1 ns and a representative non-default pair
+`(1.23456789, 0.23456789)` at 5.10--5.14 ms, down from a 26.8--27.1 ms baseline.
+Cached lookup remained allocation-free at 15.3--15.5 ns. Run the focused cases
+with:
+
+```sh
+go test -run '^$' \
+  -bench 'BenchmarkFitStages/rows/64/curve-fit' \
+  -benchmem -benchtime=500ms -count=3 .
+```
+
+`TestFitABRepresentativeGrid` compares the default and varied spread/min-dist
+pairs against results captured from the original solver with a `1e-12`
+tolerance. The default hexadecimal constants are checked by the same grid, and
+the existing concurrent test continues to require bit-identical cache results.
+
 ## End-to-end result
 
 | Rows | Before mean | After mean | Change |
