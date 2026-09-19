@@ -391,10 +391,23 @@ func clamp(x, lo, hi float32) float32 {
 	return x
 }
 
+const powTableBits = 8
+const powTableSize = 1 << powTableBits
+
+var powLog2Table, powExp2Table = func() ([powTableSize + 1]float32, [powTableSize + 1]float32) {
+	var logs, exps [powTableSize + 1]float32
+	for i := range powTableSize + 1 {
+		x := float64(i) / powTableSize
+		logs[i] = float32(math.Log2(1 + x))
+		exps[i] = float32(math.Exp2(x))
+	}
+	return logs, exps
+}()
+
 // fastPowf evaluates x^p for the positive, normal float32 distances used by
-// the layout optimizer. Range reduction plus short float32
-// polynomials avoid the float64 math.Pow dispatch in the innermost loop while
-// retaining roughly float32 precision. Unusual values use the standard path.
+// the layout optimizer. Linearly interpolated log2/exp2 tables avoid division
+// and long polynomials in this dominant inner-loop operation while retaining
+// roughly float32 precision. Unusual values use the standard path.
 func fastPowf(x, p float32) float32 {
 	bits := math.Float32bits(x)
 	exponentBits := (bits >> 23) & 0xff
@@ -402,25 +415,25 @@ func fastPowf(x, p float32) float32 {
 		return float32(math.Pow(float64(x), float64(p)))
 	}
 
-	const ln2 = float32(0.6931471805599453)
-	const invLn2 = float32(1.4426950408889634)
-	exponent := int(exponentBits) - 127
-	mantissa := math.Float32frombits((bits & 0x007fffff) | 0x3f800000)
-	z := (mantissa - 1) / (mantissa + 1)
-	z2 := z * z
-	logMantissa := 2 * z * (1 + z2*(1.0/3+z2*(1.0/5+z2*(1.0/7+z2/9))))
-	y := p * (float32(exponent)*ln2 + logMantissa)
+	mantissaBits := bits & 0x007fffff
+	index := mantissaBits >> (23 - powTableBits)
+	fraction := float32(mantissaBits&((1<<(23-powTableBits))-1)) * (1.0 / (1 << (23 - powTableBits)))
+	logLo := powLog2Table[index]
+	log2x := float32(int(exponentBits)-127) + logLo + fraction*(powLog2Table[index+1]-logLo)
+	y := p * log2x
 
-	q := y * invLn2
-	n := int(q)
-	if q < float32(n) {
+	n := int(y)
+	if y < float32(n) {
 		n--
 	}
 	if n < -126 || n > 127 {
-		return float32(math.Exp(float64(y)))
+		return float32(math.Exp2(float64(y)))
 	}
-	r := y - float32(n)*ln2
-	expR := 1 + r*(1+r*(1.0/2+r*(1.0/6+r*(1.0/24+r*(1.0/120+r*(1.0/720+r/5040))))))
+	fractional := (y - float32(n)) * powTableSize
+	expIndex := min(int(fractional), powTableSize-1)
+	expFraction := fractional - float32(expIndex)
+	expLo := powExp2Table[expIndex]
+	expR := expLo + expFraction*(powExp2Table[expIndex+1]-expLo)
 	scale := math.Float32frombits(uint32(n+127) << 23)
 	return scale * expR
 }

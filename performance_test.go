@@ -2,6 +2,9 @@ package umap
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"sync"
@@ -295,6 +298,108 @@ func BenchmarkSparseTextFitEndToEnd(b *testing.B) {
 		if _, err := u.Fit(context.Background(), x, NoTarget()); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func densityBenchmarkMatrix(tb testing.TB, density float64) CSR {
+	tb.Helper()
+	const rows, dimensions = 256, 16
+	rng := sparseBenchmarkRNG{42}
+	values := make([]float32, 0, int(rows*dimensions*density)+rows)
+	columns := make([]uint32, 0, cap(values))
+	offsets := make([]uint64, rows+1)
+	threshold := uint64(density * float64(uint64(1)<<24))
+	for row := range rows {
+		for column := range dimensions {
+			value := float32(float64(rng.next()>>40)/float64(uint64(1)<<24)*2 - 1)
+			if rng.next()>>40 >= threshold {
+				continue
+			}
+			values = append(values, value)
+			columns = append(columns, uint32(column))
+		}
+		offsets[row+1] = uint64(len(values))
+	}
+	x, err := NewCSR(values, columns, offsets, rows, dimensions)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return x
+}
+
+func densityBenchmarkChecksum(x CSR) string {
+	h := sha256.New()
+	var word [8]byte
+	for _, value := range x.values {
+		binary.LittleEndian.PutUint32(word[:4], math.Float32bits(value))
+		_, _ = h.Write(word[:4])
+	}
+	for _, column := range x.columns {
+		binary.LittleEndian.PutUint64(word[:], uint64(column))
+		_, _ = h.Write(word[:])
+	}
+	for _, offset := range x.offsets {
+		binary.LittleEndian.PutUint64(word[:], offset)
+		_, _ = h.Write(word[:])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func TestDensityBenchmarkFixturesMatchSuite(t *testing.T) {
+	want := map[float64]string{
+		.05: "b5c2b256959885a3ea2aae1794d80f95ddd62541672bfc1b6fc34dc4a0d89c06",
+		.5:  "cdd74ad6b68281319d82032a7b42ef19fb7b524ff4e2d14b3b95fbf98150b15b",
+	}
+	for density, checksum := range want {
+		if got := densityBenchmarkChecksum(densityBenchmarkMatrix(t, density)); got != checksum {
+			t.Errorf("density %g checksum = %s, want matched-suite checksum %s", density, got, checksum)
+		}
+	}
+}
+
+// BenchmarkDensityFitStages uses the exact generator, seed, shape, and fit
+// parameters of the matched synthetic/density cases from cmd/umap-benchmark.
+func BenchmarkDensityFitStages(b *testing.B) {
+	for _, density := range []float64{.05, .5} {
+		x := densityBenchmarkMatrix(b, density)
+		neighbors, err := ExactNeighborsWithOptions(context.Background(), x, 15, NewMetric(Euclidean), ExactOptions{Workers: 1})
+		if err != nil {
+			b.Fatal(err)
+		}
+		rho, sigma := SmoothKNN(neighbors, 1, 1)
+		graph := FuzzyGraph(neighbors, rho, sigma, 1)
+		initial := RandomEmbedding(256, 2, 42)
+		a, bb := FitAB(1, .1)
+		b.Run(fmt.Sprintf("density/%.2g/nonzeros/%d/edges/%d", density, len(x.values), len(graph.Edges)), func(b *testing.B) {
+			stages := []struct {
+				name string
+				fn   func() error
+			}{
+				{"csr-validation", func() error { _, err := NewCSR(x.values, x.columns, x.offsets, x.rows, x.columnCount); return err }},
+				{"clone-input", func() error { _, err := cloneMatrix(x); return err }},
+				{"neighbors", func() error {
+					_, err := ExactNeighborsWithOptions(context.Background(), x, 15, NewMetric(Euclidean), ExactOptions{Workers: 1})
+					return err
+				}},
+				{"smooth-knn", func() error { SmoothKNN(neighbors, 1, 1); return nil }},
+				{"graph", func() error { FuzzyGraph(neighbors, rho, sigma, 1); return nil }},
+				{"random-init", func() error { RandomEmbedding(256, 2, 42); return nil }},
+				{"layout", func() error {
+					_, err := optimizeLayoutContext(context.Background(), initial, graph, 2, 100, 1, float32(a), float32(bb), 1, 5, 42)
+					return err
+				}},
+			}
+			for _, stage := range stages {
+				b.Run(stage.name, func(b *testing.B) {
+					b.ReportAllocs()
+					for range b.N {
+						if err := stage.fn(); err != nil {
+							b.Fatal(err)
+						}
+					}
+				})
+			}
+		})
 	}
 }
 
