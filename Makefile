@@ -23,4 +23,4 @@ profiles:
 profiles-small:
 	go test -run '^$$' -bench BenchmarkFitStages -benchtime 5x -cpuprofile small-input.cpu.pprof -memprofile small-input.heap.pprof .
 profiles-sparse:
-	go test -run '^$$' -bench BenchmarkExactSparseTextCosine -benchtime 3x -cpuprofile sparse-cpu.pprof -memprofile sparse-heap.pprof .
+	go test -run '^$$' -bench BenchmarkSparseTextFitEndToEnd -benchtime 3x -cpuprofile sparse-cpu.pprof -memprofile sparse-heap.pprof .

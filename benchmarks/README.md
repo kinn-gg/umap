@@ -94,6 +94,42 @@ go test -run '^$' -bench 'BenchmarkFitStages/rows/256/layout$' \
 go tool pprof -top layout.pprof
 ```
 
+### Sparse-text fit profile
+
+`BenchmarkSparseTextFitStages` uses the matched 1,000-row by 5,000-dimension,
+1%-dense cosine input and separates CSR validation, input cloning, exact
+neighbors, smooth-kNN, graph construction, random initialization, and layout.
+`BenchmarkSparseTextFitEndToEnd` is the corresponding profile target:
+
+```sh
+go test -run '^$' -bench BenchmarkSparseTextFitStages -benchmem -count 3 .
+make profiles-sparse
+go tool pprof -top sparse-cpu.pprof
+go tool pprof -top -alloc_space sparse-heap.pprof
+```
+
+On an Intel i5-12600K with Go 1.27.1, the median isolated neighbor-search
+time fell from 57.7 ms to 24.8 ms (-57.0%). The optimized search builds a
+compact column-to-row index once, accumulates only non-zero sparse dot
+products, and still offers every candidate in ascending row order. It is
+therefore exact and preserves zero-dot ties, neighbor recall, and seeded
+repeatability. Searches with an explicit memory budget retain the bounded
+full-scan path so the index cannot bypass the caller's limit.
+
+The matched five-run end-to-end mean fell from 362.7 ms to 210.0 ms (-42.1%).
+This is 61.4% below the 544.4 ms starting point recorded in issue #36. Stage
+medians after the change were 0.07 ms validation, 0.44 ms cloning, 31.8 ms
+neighbors, 2.39 ms smooth-kNN, 4.75 ms graph construction, 0.01 ms random
+initialization, and 172.2 ms layout. Layout is the dominant stage at about
+81% of the summed stage time; exact neighbors account for about 15%.
+
+The inverted index adds about 504 KiB of temporary allocation to the isolated
+search. In the matched process, retained Go heap stayed effectively flat
+(1.111 MB before and after) and peak RSS moved from 25.6 MB to 26.1 MB. Exact
+search remains the automatic choice at this shape: approximate search would
+trade away exact recall and repeatability without addressing the dominant
+layout stage. Dense inputs do not enter this specialization.
+
 Measure peak RSS for any Go benchmark or Python reference invocation:
 
 ```sh

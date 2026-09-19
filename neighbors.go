@@ -115,6 +115,9 @@ func ExactNeighborsWithOptions(ctx context.Context, x Matrix, k int, metric Metr
 		block = n
 	}
 	out := newNeighborHeap(n, k)
+	if csr, ok := x.(CSR); ok && metric.Kind == Cosine && opts.MemoryBudget == 0 && boundedWorkers(opts.Workers, n) == 1 {
+		return exactSparseCosineNeighbors(ctx, csr, out, block, opts.Progress)
+	}
 	distance := newMatrixDistanceEvaluator(metric, x)
 	workers := boundedWorkers(opts.Workers, n)
 	if opts.MemoryBudget > 0 {
@@ -157,6 +160,84 @@ func ExactNeighborsWithOptions(ctx context.Context, x Matrix, k int, metric Metr
 		completed := done.Add(int64(n * (end - start)))
 		if opts.Progress != nil {
 			opts.Progress(SearchProgress{Algorithm: SearchExact, Completed: completed, Total: total})
+		}
+	}
+	return out.neighbors(), nil
+}
+
+// exactSparseCosineNeighbors uses a transposed CSR index to accumulate only
+// non-zero dot products. It still visits candidates in ascending row order, so
+// zero-dot ties and seeded downstream behavior are identical to a full scan.
+func exactSparseCosineNeighbors(ctx context.Context, x CSR, out *neighborHeap, block int, progress ProgressFunc) (Neighbors, error) {
+	n, dimensions := x.Shape()
+	norms := make([]float64, n)
+	counts := make([]int, dimensions+1)
+	for row := range n {
+		columns, values := x.Row(row)
+		for i, column := range columns {
+			value := float64(values[i])
+			norms[row] += value * value
+			counts[int(column)+1]++
+		}
+	}
+	for column := range dimensions {
+		counts[column+1] += counts[column]
+	}
+	next := append([]int(nil), counts[:dimensions]...)
+	postingRows := make([]uint32, len(x.values))
+	postingValues := make([]float32, len(x.values))
+	for row := range n {
+		columns, values := x.Row(row)
+		for i, column := range columns {
+			position := next[column]
+			postingRows[position] = uint32(row)
+			postingValues[position] = values[i]
+			next[column]++
+		}
+	}
+	dots := make([]float64, n)
+	marks := make([]uint32, n)
+	generation := uint32(0)
+	total := int64(n) * int64(n)
+	for start := 0; start < n; start += block {
+		end := min(n, start+block)
+		for row := 0; row < n; row++ {
+			if err := ctx.Err(); err != nil {
+				return Neighbors{}, err
+			}
+			generation++
+			columns, values := x.Row(row)
+			for i, column := range columns {
+				value := float64(values[i])
+				for p := counts[column]; p < counts[int(column)+1]; p++ {
+					candidate := int(postingRows[p])
+					if candidate < start || candidate >= end {
+						continue
+					}
+					if marks[candidate] != generation {
+						marks[candidate] = generation
+						dots[candidate] = 0
+					}
+					dots[candidate] += value * float64(postingValues[p])
+				}
+			}
+			for candidate := start; candidate < end; candidate++ {
+				dot := 0.0
+				if marks[candidate] == generation {
+					dot = dots[candidate]
+				}
+				distance := 1.0
+				if norms[row] == 0 && norms[candidate] == 0 {
+					distance = 0
+				} else if norms[row] != 0 && norms[candidate] != 0 {
+					distance -= dot / math.Sqrt(norms[row]*norms[candidate])
+				}
+				out.offer(row, candidate, float32(distance))
+			}
+		}
+		completed := int64(n * end)
+		if progress != nil {
+			progress(SearchProgress{Algorithm: SearchExact, Completed: completed, Total: total})
 		}
 	}
 	return out.neighbors(), nil

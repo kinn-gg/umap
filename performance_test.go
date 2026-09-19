@@ -149,6 +149,103 @@ func BenchmarkFitStages(b *testing.B) {
 	}
 }
 
+func sparseTextBenchmarkMatrix(tb testing.TB) CSR {
+	tb.Helper()
+	const rows, dimensions = 1000, 5000
+	const threshold uint64 = 167772
+	rng := sparseBenchmarkRNG{42}
+	values := make([]float32, 0, 50000)
+	columns := make([]uint32, 0, 50000)
+	offsets := make([]uint64, rows+1)
+	for row := range rows {
+		for column := range dimensions {
+			value := float32(float64(rng.next()>>40)/float64(uint64(1)<<24)*2 - 1)
+			if rng.next()>>40 >= threshold {
+				continue
+			}
+			values = append(values, value)
+			columns = append(columns, uint32(column))
+		}
+		offsets[row+1] = uint64(len(values))
+	}
+	x, err := NewCSR(values, columns, offsets, rows, dimensions)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return x
+}
+
+type sparseBenchmarkRNG struct{ state uint64 }
+
+func (r *sparseBenchmarkRNG) next() uint64 {
+	r.state += 0x9e3779b97f4a7c15
+	z := r.state
+	z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9
+	z = (z ^ (z >> 27)) * 0x94d049bb133111eb
+	return z ^ (z >> 31)
+}
+
+// BenchmarkSparseTextFitStages isolates every stage requested by issue #36
+// using the representative 1,000 x 5,000, 1%-dense cosine shape.
+func BenchmarkSparseTextFitStages(b *testing.B) {
+	x := sparseTextBenchmarkMatrix(b)
+	neighbors, err := ExactNeighborsWithOptions(context.Background(), x, 15, NewMetric(Cosine), ExactOptions{Workers: 1})
+	if err != nil {
+		b.Fatal(err)
+	}
+	rho, sigma := SmoothKNN(neighbors, 1, 1)
+	graph := FuzzyGraph(neighbors, rho, sigma, 1)
+	initial := RandomEmbedding(1000, 2, 42)
+	a, bb := FitAB(1, .1)
+	stages := []struct {
+		name string
+		fn   func() error
+	}{
+		{"csr-validation", func() error { _, err := NewCSR(x.values, x.columns, x.offsets, x.rows, x.columnCount); return err }},
+		{"clone-input", func() error { _, err := cloneMatrix(x); return err }},
+		{"neighbors", func() error {
+			_, err := ExactNeighborsWithOptions(context.Background(), x, 15, NewMetric(Cosine), ExactOptions{Workers: 1})
+			return err
+		}},
+		{"smooth-knn", func() error { SmoothKNN(neighbors, 1, 1); return nil }},
+		{"graph", func() error { FuzzyGraph(neighbors, rho, sigma, 1); return nil }},
+		{"random-init", func() error { RandomEmbedding(1000, 2, 42); return nil }},
+		{"layout", func() error {
+			_, err := optimizeLayoutContext(context.Background(), initial, graph, 2, 100, 1, float32(a), float32(bb), 1, 5, 42)
+			return err
+		}},
+	}
+	for _, stage := range stages {
+		b.Run(stage.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				if err := stage.fn(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkSparseTextFitEndToEnd(b *testing.B) {
+	x := sparseTextBenchmarkMatrix(b)
+	seed := uint64(42)
+	cfg := DefaultConfig()
+	cfg.Epochs, cfg.Init, cfg.Workers, cfg.Deterministic = 100, RandomInit, 1, true
+	cfg.Seed, cfg.Metric = &seed, NewMetric(Cosine)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		u, err := New(cfg)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := u.Fit(context.Background(), x, NoTarget()); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func smoothKNNBenchmarkNeighbors(rows int, duplicated bool) Neighbors {
 	const k = 15
 	distances := make([]float32, rows*k)
