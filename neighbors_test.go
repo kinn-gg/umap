@@ -52,6 +52,24 @@ func TestParallelNeighborSearchReproducible(t *testing.T) {
 	}
 }
 
+func TestExactWorkerSelection(t *testing.T) {
+	small, _ := NewDense(make([]float32, 64*8), 64, 8)
+	large, _ := NewDense(make([]float32, 512*32), 512, 32)
+	sparse, _ := NewCSR(nil, nil, make([]uint64, 513), 512, 32)
+	if got := exactWorkers(small, NewMetric(Euclidean), 0); got != 1 {
+		t.Fatalf("small automatic worker count = %d, want 1", got)
+	}
+	if got := exactWorkers(large, NewMetric(Euclidean), 0); runtime.GOMAXPROCS(0) >= 3 && got == 1 {
+		t.Fatalf("large automatic worker count = %d, want parallel", got)
+	}
+	if got := exactWorkers(sparse, NewMetric(Cosine), 0); got != 1 {
+		t.Fatalf("sparse cosine automatic worker count = %d, want 1", got)
+	}
+	if got := exactWorkers(small, NewMetric(Euclidean), 4); got != 4 {
+		t.Fatalf("explicit worker count = %d, want 4", got)
+	}
+}
+
 func TestHotPathAllocationGate(t *testing.T) {
 	a, b := make([]float32, 128), make([]float32, 128)
 	for _, kind := range []MetricKind{Euclidean, SquaredEuclidean, Cosine} {
@@ -277,19 +295,58 @@ func BenchmarkNeighborSearchCrossover(b *testing.B) {
 }
 
 func BenchmarkExactNeighborWorkers(b *testing.B) {
-	const rows, dimensions = 512, 32
-	data := make([]float32, rows*dimensions)
-	rng := NewRNG(99)
-	for i := range data {
-		data[i] = rng.Float32()
+	type benchmarkCase struct {
+		name       string
+		rows, dims int
+		metric     MetricKind
+		sparse     bool
 	}
-	x, _ := NewDense(data, rows, dimensions)
-	for _, workers := range []int{1, 2, 4, 8, runtime.GOMAXPROCS(0)} {
-		b.Run(fmt.Sprintf("workers/%d", workers), func(b *testing.B) {
-			b.ReportAllocs()
-			for range b.N {
-				_, _ = ExactNeighborsWithOptions(context.Background(), x, 15, NewMetric(Euclidean), ExactOptions{Workers: workers})
+	cases := []benchmarkCase{
+		{"dense-euclidean/128x16", 128, 16, Euclidean, false},
+		{"dense-euclidean/512x32", 512, 32, Euclidean, false},
+		{"dense-euclidean/1024x128", 1024, 128, Euclidean, false},
+		{"dense-cosine/128x16", 128, 16, Cosine, false},
+		{"dense-cosine/512x32", 512, 32, Cosine, false},
+		{"dense-cosine/1024x128", 1024, 128, Cosine, false},
+		{"sparse-cosine/128x128", 128, 128, Cosine, true},
+		{"sparse-cosine/512x1024", 512, 1024, Cosine, true},
+	}
+	for _, c := range cases {
+		var x Matrix
+		if c.sparse {
+			perRow := min(8, c.dims)
+			values := make([]float32, c.rows*perRow)
+			columns := make([]uint32, len(values))
+			offsets := make([]uint64, c.rows+1)
+			for row := range c.rows {
+				offsets[row] = uint64(row * perRow)
+				for j := range perRow {
+					values[row*perRow+j] = float32(j+1) / float32(perRow)
+					stride := c.dims / perRow
+					columns[row*perRow+j] = uint32(j*stride + row%stride)
+				}
 			}
-		})
+			offsets[c.rows] = uint64(len(values))
+			x, _ = NewCSR(values, columns, offsets, c.rows, c.dims)
+		} else {
+			data := make([]float32, c.rows*c.dims)
+			rng := NewRNG(99)
+			for i := range data {
+				data[i] = rng.Float32()
+			}
+			x, _ = NewDense(data, c.rows, c.dims)
+		}
+		for _, workers := range []int{1, 2, 4, 8, 0} {
+			label := fmt.Sprintf("workers-%d", workers)
+			if workers == 0 {
+				label = "workers-auto"
+			}
+			b.Run(c.name+"/"+label, func(b *testing.B) {
+				b.ReportAllocs()
+				for range b.N {
+					_, _ = ExactNeighborsWithOptions(context.Background(), x, 15, NewMetric(c.metric), ExactOptions{Workers: workers})
+				}
+			})
+		}
 	}
 }
